@@ -21,7 +21,7 @@ const AddToolParameters = `{
 	"numbers": {	
 		"type": "array",
 		"items": {
-		"type": "number"
+		"type": "integer"
 		}
 	}
 }
@@ -33,7 +33,7 @@ const SubToolParameters = `{
 	"numbers": {
 		"type": "array",
 		"items": {
-		"type": "number"
+		"type": "integer"
 		}	
 	}
 }

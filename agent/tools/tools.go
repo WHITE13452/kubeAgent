@@ -35,6 +35,8 @@ func SubToolTpl() openai.Tool {
 	return tool
 }
 
+// 因为工具的despcription中让大模型返回的入参是一个例如1,2的字符串
+// 所以这里的入参是string类型，用split分割一下就可以
 func AddTool(numbsers string) int {
 	nums := strings.Split(numbsers, ",")
 	inum0, _ := strconv.Atoi(nums[0])
