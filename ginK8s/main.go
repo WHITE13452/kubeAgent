@@ -29,5 +29,8 @@ func main() {
 	r.GET("/:resourceName", resourceContrller.GetResourceList)
 	r.POST("/:resourceName", resourceContrller.CreateResource)
 	r.DELETE("/resource/:resourceName", resourceContrller.DeleteResource)
+	r.GET("/get/gvr", resourceContrller.GetGVR)
+
+	r.Run(":8080")
 	
 }

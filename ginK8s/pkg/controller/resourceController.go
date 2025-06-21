@@ -34,7 +34,7 @@ func (r *ResourceController) GetResourceList(c *gin.Context) {
 }
 
 func (r *ResourceController) CreateResource(c *gin.Context) {
-	resourceName := c.Param("resourcename")
+	resourceName := c.Param("resourceName")
 	if resourceName == "" {
 		c.JSON(400, gin.H{"error": "resourceName is required"})
 		return
@@ -60,13 +60,34 @@ func (r *ResourceController) DeleteResource(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "resourceName is required"})
 		return
 	}
-	// ns := c.DefaultQuery("namespace", "default")
-
-	// err := r.ResourceService.DeleteResource(resourceName, ns)
-	// if err != nil {
-	// 	c.JSON(500, gin.H{"error": err.Error()})
-	// 	return
-	// }
+	ns := c.DefaultQuery("namespace", "default")
+	
+	name := c.Query("name")
+	if name == "" {
+		c.JSON(400, gin.H{"error": "name is required"})
+		return
+	}
+	err := r.ResourceService.DeleteResource(resourceName, name, ns)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
 
 	c.JSON(200, gin.H{"message": "Resource deleted successfully"})
+}
+
+func (r *ResourceController) GetGVR(c *gin.Context) {
+	resourceName := c.Query("resourceName")
+	if resourceName == "" {
+		c.JSON(400, gin.H{"error": "resourceName is required"})
+		return
+	}
+
+	gvr, err := r.ResourceService.GetGVR(resourceName)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"gvr": gvr})
 }

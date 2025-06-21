@@ -66,6 +66,28 @@ func (r *ResourceService) CreateResource(resourceOrKindArg string, yaml string) 
 	return nil
 }
 
+func (r *ResourceService) DeleteResource(resourceOrKindArg, name, namespace string) error {
+	ri, err := r.getResourceInterface(resourceOrKindArg, namespace, r.client, r.restMapper)
+	if err != nil {
+		return fmt.Errorf("failed to get resource interface for %s: %v", resourceOrKindArg, err)
+	}
+
+	err = ri.Delete(context.Background(), name, metav1.DeleteOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to delete resource %s in namespace %s: %v", resourceOrKindArg, namespace, err)
+	}
+	return nil
+
+}
+
+func (r *ResourceService) GetGVR(resourceOrKindArg string) (*schema.GroupVersionResource, error) {
+	restMapping, err := r.mappingFor(resourceOrKindArg, r.restMapper)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get mapping for resource or kind %s: %v", resourceOrKindArg, err)
+	}
+	return &restMapping.Resource, nil
+}
+
 func (r *ResourceService) getResourceInterface(resourceOrKindArg, namespace string, client dynamic.Interface, restMapper *meta.RESTMapper) (dynamic.ResourceInterface, error) {
 	var ri dynamic.ResourceInterface
 	restMapping, err := r.mappingFor(resourceOrKindArg, restMapper)
