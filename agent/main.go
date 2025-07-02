@@ -67,12 +67,15 @@ func main() {
 			i++
 			fmt.Println(i)
 			res := 0
-			if action[1] == tools.AddToolName {
+			switch action[1] {
+			case tools.AddToolName:
 				fmt.Println("calls AddTool")
 				res = tools.AddTool(actionInput[1])
-			} else if action[1] == tools.SubToolName {
+			case tools.SubToolName:
 				fmt.Println("calls SubTool")
 				res = tools.SubTool(actionInput[1])
+			default:
+				fmt.Println("Unknown action:", action[1])
 			}
 			fmt.Println("========函数返回结果========")
 			fmt.Println(res)

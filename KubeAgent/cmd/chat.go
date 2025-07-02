@@ -49,51 +49,69 @@ to quickly create a Cobra application.`,
 				firstResponse := ai.NormalChat(ai.MessageStore.ToMessage())
 				fmt.Printf("========第%d轮回答========\n", i)
 				fmt.Println(firstResponse.Content)
-				regaxPattern := regexp.MustCompile(`Final Answer:\s*(.*)`)
-				finalAnswer := regaxPattern.FindStringSubmatch(firstResponse.Content)
-				if len(finalAnswer) > 1 {
-					fmt.Println("Final Answer:", finalAnswer[1])
+				// Check if the response contains a final answer
+				finalAnswerRegex := regexp.MustCompile(`Final Answer:\s*(.*)`)
+				if finalAnswerRegex.MatchString(firstResponse.Content) {
+					finalAnswer := finalAnswerRegex.FindStringSubmatch(firstResponse.Content)
+					if len(finalAnswer) > 1 {
+						fmt.Println("Final Answer:", finalAnswer[1])
+					} 
 					break
 				}
 
-				ai.MessageStore.AddForAssistant(firstResponse.Content)
+				// ai.MessageStore.AddForAssistant(firstResponse.Content)
 				
-				regexAction := regexp.MustCompile(`Action:\s*(.*?)[\n]`)
-				regexActionInput := regexp.MustCompile(`Action Input:\s*(.*?)[\n]`)
+				// Check if the response contains a tool call
+				actionRegex := regexp.MustCompile(`Action:\s*(.*?)[\n]`)
+				actionInputRegex := regexp.MustCompile(`Action Input:\s*(.*)`)
 
-				action := regexAction.FindStringSubmatch(firstResponse.Content)
-				actionInput := regexActionInput.FindStringSubmatch(firstResponse.Content)
+				actionMatch := actionRegex.FindStringSubmatch(firstResponse.Content)
+				actionInputMatch := actionInputRegex.FindStringSubmatch(firstResponse.Content)
 
-				if len(action) > 1 && len(actionInput) > 1 {
+				if len(actionMatch) > 1 && len(actionInputMatch) > 1 {
 					i++
-					Observation := "Observation: %s"
-					switch action[1] {
+					// model thoughts
+					thoughtAndAction := firstResponse.Content
+					ai.MessageStore.AddForAssistant(thoughtAndAction)
+
+					action := actionMatch[1]
+					actionInput := actionInputMatch[1]
+
+					var observation string
+					switch action {
 					case functionTools.CreateTool.Name:
 						var param tools.CreateToolParam
-						err := json.Unmarshal([]byte(actionInput[1]), &param)
+						err := json.Unmarshal([]byte(actionInput), &param)
 						if err != nil {
 							fmt.Println("Error parsing CreateTool parameters:", err)
-							continue
+							observation = fmt.Sprintf("Error parsing CreateTool parameters: %v", err)
+						} else {
+							output := functionTools.CreateTool.Run(param.Prompt, param.Resource)
+							observation = fmt.Sprintf("Observation: %s", output)
 						}
-						output := functionTools.CreateTool.Run(param.Prompt, param.Resource)
-						Observation = fmt.Sprintf(Observation, output)
 					case functionTools.HumanTool.Name:
-						var param tools.HumanToolOaram
-						err := json.Unmarshal([]byte(actionInput[1]), &param)
+						var param tools.HumanToolParam
+						err := json.Unmarshal([]byte(actionInput), &param)
 						if err != nil {
 							fmt.Println("Error parsing HumanTool parameters:", err)
-							continue
+							observation = fmt.Sprintf("Error parsing HumanTool parameters: %v", err)
+						} else {
+							output := functionTools.HumanTool.Run(param.Prompt)
+							observation = fmt.Sprintf("Observation: %s", output)
 						}
-						output := functionTools.HumanTool.Run(param.Prompt)
-						Observation = fmt.Sprintf(Observation, output)
 					default:
-						fmt.Println("Unknown action:", action[1])
-						continue
+						observation = fmt.Sprintf("Unknown action: %s", action)
 					}
-					prompt := firstResponse.Content + Observation
-					fmt.Printf("========第%d轮的prompt========\n", i)
-					fmt.Println(prompt)
-					ai.MessageStore.AddForUser(prompt)
+					fmt.Printf("========工具执行结果========\n%s\n", observation)
+                    
+                    // 将 Observation 添加到历史记录，让模型进行下一步思考
+                    ai.MessageStore.AddForUser(observation)
+
+				} else {
+					// 如果模型没有按预期格式返回 Action，则直接将回复作为最终答案并结束
+                    fmt.Println("模型未返回有效 Action，对话结束。")
+                    fmt.Println(firstResponse.Content)
+                    break
 				}
 			}
 		}

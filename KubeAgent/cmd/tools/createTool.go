@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"kubeagent/cmd/ai"
 	prompttpl "kubeagent/cmd/promptTpl"
 	"kubeagent/cmd/utils"
@@ -47,7 +48,7 @@ func (c *CreateTool) Run(prompt, resource string) string {
 	}
 
 	resp := ai.NormalChat(messages)
-	log.Println("CreateTool response:", resp.Content)
+	fmt.Println("CreateTool response:", resp.Content)
 
 	body := map[string]string{"yaml": resp.Content}
 	requestJsonBody, err := json.Marshal(body)
@@ -56,13 +57,13 @@ func (c *CreateTool) Run(prompt, resource string) string {
 		return "Error creating tool: " + err.Error()
 	}
 
-	url := "http://localhost:8000/" + resource
+	url := "http://localhost:8080/" + resource
 	responseBody ,err := utils.PostHTTP(url, requestJsonBody)
 	if err != nil {
 		log.Println("Error making HTTP request:", err)
 		return "Error creating tool: " + err.Error()
 	}
-	log.Println("HTTP response body:", responseBody)
+	fmt.Println("HTTP response body:", responseBody)
 	var response CreateToolResponse
 	err = json.Unmarshal([]byte(responseBody), &response)
 	if err != nil {

@@ -2,7 +2,7 @@ package tools
 
 import "fmt"
 
-type HumanToolOaram struct {
+type HumanToolParam struct {
 	Prompt string `json:"prompt"`
 }
 
@@ -21,7 +21,7 @@ func NewHumanTool() *HumanTool {
 }
 
 func (h *HumanTool) Run(prompt string) string {
-	fmt.Println("HumanTool Run called with prompt:", prompt)
+	fmt.Println("HumanTool Run called with prompt(input your answer and press Enter):", prompt)
 	var input string
 	fmt.Scanln(&input)
 	return input
