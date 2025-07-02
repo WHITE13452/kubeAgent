@@ -42,7 +42,7 @@ to quickly create a Cobra application.`,
 				fmt.Println("Exiting chat. Goodbye!")
 				return
 			}
-			prompt := buildPrompt(functionTools.CreateTool, functionTools.HumanTool, input)
+			prompt := buildPrompt(functionTools.DeleteTool, functionTools.CreateTool, functionTools.ListTool, functionTools.HumanTool, input)
 			ai.MessageStore.AddForUser(prompt)
 			i := 1
 			for {
@@ -89,6 +89,26 @@ to quickly create a Cobra application.`,
 							output := functionTools.CreateTool.Run(param.Prompt, param.Resource)
 							observation = fmt.Sprintf("Observation: %s", output)
 						}
+					case functionTools.ListTool.Name:
+						var param tools.ListToolParam
+						err := json.Unmarshal([]byte(actionInput), &param)
+						if err != nil {
+							fmt.Println("Error parsing ListTool parameters:", err)
+							observation = fmt.Sprintf("Error parsing ListTool parameters: %v", err)
+						} else {
+							output := functionTools.ListTool.Run(param.Resource, param.Namespace)
+							observation = fmt.Sprintf("Observation: %s", output)
+						}
+					case functionTools.DeleteTool.Name:
+						var param tools.DeleteToolParam
+						err := json.Unmarshal([]byte(actionInput), &param)
+						if err != nil {
+							fmt.Println("Error parsing DeleteTool parameters:", err)
+							observation = fmt.Sprintf("Error parsing DeleteTool parameters: %v", err)
+						} else {
+							output := functionTools.DeleteTool.Run(param.Resource, param.Name, param.Namespace)
+							observation = fmt.Sprintf("Observation: %s", output)
+						}
 					case functionTools.HumanTool.Name:
 						var param tools.HumanToolParam
 						err := json.Unmarshal([]byte(actionInput), &param)
@@ -133,28 +153,34 @@ func init() {
 }
 
 type FunctionTools struct {
+	DeleteTool *tools.DeleteTool
 	CreateTool *tools.CreateTool
+	ListTool  *tools.ListTool
 	HumanTool *tools.HumanTool
 }
 
 func initFunctionTools() *FunctionTools {
 	return &FunctionTools{
+		DeleteTool: tools.NewDeleteTool(),
 		CreateTool: tools.NewCreateTool(),
+		ListTool: tools.NewListTool(),
 		HumanTool: tools.NewHumanTool(),
 	}
 }
 
-func buildPrompt(createTool *tools.CreateTool, humanTool *tools.HumanTool, query string) string {
+func buildPrompt(deleteTool *tools.DeleteTool, createTool *tools.CreateTool, listTool *tools.ListTool,humanTool *tools.HumanTool, query string) string {
+	deleteToolDef := "Name: " + deleteTool.Name + "\nDescription: " + deleteTool.Description + "\nArgsSchema: " + deleteTool.ArgsSchema + "\n"
 	createToolDef := "Name: " + createTool.Name + "\nDescription: " + createTool.Description + "\nArgsSchema: " + createTool.ArgsSchema + "\n"
+	listToolDef := "Name: " + listTool.Name + "\nDescription: " + listTool.Description + "\nArgsSchema: " + listTool.ArgsSchema + "\n"
 	humanToolDef := "Name: " + humanTool.Name + "\nDescription: " + humanTool.Description + "\nArgsSchema: " + humanTool.ArgsSchema + "\n"
 
 	toolsList := make([]string, 0)
-	toolsList = append(toolsList, createToolDef, humanToolDef)
+	toolsList = append(toolsList, createToolDef, listToolDef, deleteToolDef, humanToolDef)
 
-	tool_names := make([]string, 0)
-	tool_names = append(tool_names, createTool.Name, humanTool.Name)
+	toolNames := make([]string, 0)
+	toolNames = append(toolNames, createTool.Name, listTool.Name, deleteTool.Name, humanTool.Name)
 
-	prompt := fmt.Sprintf(prompttpl.Template, toolsList, tool_names, "", query)
+	prompt := fmt.Sprintf(prompttpl.Template, toolsList, toolNames, "", query)
 
 	return prompt
 }
