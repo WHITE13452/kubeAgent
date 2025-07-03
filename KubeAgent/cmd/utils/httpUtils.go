@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"net/http"
 )
@@ -13,6 +14,10 @@ func GetHTTP(url string) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("获取 URL 失败: %s", resp.Status)
+	}
+	
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
