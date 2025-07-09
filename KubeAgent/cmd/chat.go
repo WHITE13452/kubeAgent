@@ -28,7 +28,7 @@ This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Initialize tools 
-		functionTools := initFunctionTools()
+		functionTools := initHTTPFunctionTools()
 
 		scanner := bufio.NewScanner(cmd.InOrStdin())
 		fmt.Println("Hi，I am kubeAgent, What can I help you?（Input 'exit' to quit）:")
@@ -42,7 +42,7 @@ to quickly create a Cobra application.`,
 				fmt.Println("Exiting chat. Goodbye!")
 				return
 			}
-			prompt := buildPrompt(functionTools.DeleteTool, functionTools.CreateTool, functionTools.ListTool, functionTools.HumanTool, input)
+			prompt := buildHTTPPrompt(functionTools.DeleteTool, functionTools.CreateTool, functionTools.ListTool, functionTools.HumanTool, input)
 			ai.MessageStore.AddForUser(prompt)
 			i := 1
 			for {
@@ -54,7 +54,8 @@ to quickly create a Cobra application.`,
 				if finalAnswerRegex.MatchString(firstResponse.Content) {
 					finalAnswer := finalAnswerRegex.FindStringSubmatch(firstResponse.Content)
 					if len(finalAnswer) > 1 {
-						fmt.Println("Final Answer:", finalAnswer[1])
+						fmt.Println("========最终 GPT 回复========")
+						fmt.Println(firstResponse.Content)
 					} 
 					break
 				}
@@ -152,15 +153,15 @@ func init() {
 	// chatCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }
 
-type FunctionTools struct {
+type HTTPFunctionTools struct {
 	DeleteTool *tools.DeleteTool
 	CreateTool *tools.CreateTool
 	ListTool  *tools.ListTool
 	HumanTool *tools.HumanTool
 }
 
-func initFunctionTools() *FunctionTools {
-	return &FunctionTools{
+func initHTTPFunctionTools() *HTTPFunctionTools {
+	return &HTTPFunctionTools{
 		DeleteTool: tools.NewDeleteTool(),
 		CreateTool: tools.NewCreateTool(),
 		ListTool: tools.NewListTool(),
@@ -168,7 +169,7 @@ func initFunctionTools() *FunctionTools {
 	}
 }
 
-func buildPrompt(deleteTool *tools.DeleteTool, createTool *tools.CreateTool, listTool *tools.ListTool,humanTool *tools.HumanTool, query string) string {
+func buildHTTPPrompt(deleteTool *tools.DeleteTool, createTool *tools.CreateTool, listTool *tools.ListTool,humanTool *tools.HumanTool, query string) string {
 	deleteToolDef := "Name: " + deleteTool.Name + "\nDescription: " + deleteTool.Description + "\nArgsSchema: " + deleteTool.ArgsSchema + "\n"
 	createToolDef := "Name: " + createTool.Name + "\nDescription: " + createTool.Description + "\nArgsSchema: " + createTool.ArgsSchema + "\n"
 	listToolDef := "Name: " + listTool.Name + "\nDescription: " + listTool.Description + "\nArgsSchema: " + listTool.ArgsSchema + "\n"
