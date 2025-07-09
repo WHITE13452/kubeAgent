@@ -27,7 +27,7 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// Initialize tools 
+		// Initialize tools
 		functionTools := initHTTPFunctionTools()
 
 		scanner := bufio.NewScanner(cmd.InOrStdin())
@@ -56,12 +56,12 @@ to quickly create a Cobra application.`,
 					if len(finalAnswer) > 1 {
 						fmt.Println("========最终 GPT 回复========")
 						fmt.Println(firstResponse.Content)
-					} 
+					}
 					break
 				}
 
 				// ai.MessageStore.AddForAssistant(firstResponse.Content)
-				
+
 				// Check if the response contains a tool call
 				actionRegex := regexp.MustCompile(`Action:\s*(.*?)[\n]`)
 				actionInputRegex := regexp.MustCompile(`Action Input:\s*(.*)`)
@@ -124,15 +124,15 @@ to quickly create a Cobra application.`,
 						observation = fmt.Sprintf("Unknown action: %s", action)
 					}
 					fmt.Printf("========工具执行结果========\n%s\n", observation)
-                    
-                    // 将 Observation 添加到历史记录，让模型进行下一步思考
-                    ai.MessageStore.AddForUser(observation)
+
+					// 将 Observation 添加到历史记录，让模型进行下一步思考
+					ai.MessageStore.AddForUser(observation)
 
 				} else {
 					// 如果模型没有按预期格式返回 Action，则直接将回复作为最终答案并结束
-                    fmt.Println("模型未返回有效 Action，对话结束。")
-                    fmt.Println(firstResponse.Content)
-                    break
+					fmt.Println("模型未返回有效 Action，对话结束。")
+					fmt.Println(firstResponse.Content)
+					break
 				}
 			}
 		}
@@ -156,20 +156,20 @@ func init() {
 type HTTPFunctionTools struct {
 	DeleteTool *tools.DeleteTool
 	CreateTool *tools.CreateTool
-	ListTool  *tools.ListTool
-	HumanTool *tools.HumanTool
+	ListTool   *tools.ListTool
+	HumanTool  *tools.HumanTool
 }
 
 func initHTTPFunctionTools() *HTTPFunctionTools {
 	return &HTTPFunctionTools{
 		DeleteTool: tools.NewDeleteTool(),
 		CreateTool: tools.NewCreateTool(),
-		ListTool: tools.NewListTool(),
-		HumanTool: tools.NewHumanTool(),
+		ListTool:   tools.NewListTool(),
+		HumanTool:  tools.NewHumanTool(),
 	}
 }
 
-func buildHTTPPrompt(deleteTool *tools.DeleteTool, createTool *tools.CreateTool, listTool *tools.ListTool,humanTool *tools.HumanTool, query string) string {
+func buildHTTPPrompt(deleteTool *tools.DeleteTool, createTool *tools.CreateTool, listTool *tools.ListTool, humanTool *tools.HumanTool, query string) string {
 	deleteToolDef := "Name: " + deleteTool.Name + "\nDescription: " + deleteTool.Description + "\nArgsSchema: " + deleteTool.ArgsSchema + "\n"
 	createToolDef := "Name: " + createTool.Name + "\nDescription: " + createTool.Description + "\nArgsSchema: " + createTool.ArgsSchema + "\n"
 	listToolDef := "Name: " + listTool.Name + "\nDescription: " + listTool.Description + "\nArgsSchema: " + listTool.ArgsSchema + "\n"
