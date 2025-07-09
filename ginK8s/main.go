@@ -17,11 +17,13 @@ func main() {
 	restMapper := K8sConfig.InitRESTMapper()
 	dynamicClient := K8sConfig.InitDynamicClient()
 	informer := K8sConfig.InitInformer()
-
-	// clinetSet := K8sConfig.InitClientSet()
+	clinetSet := K8sConfig.InitClientSet()
 
 	resourceContrller := controller.NewResourceController(
 		services.NewResourceService(&restMapper, dynamicClient, informer),
+	)
+	podLogController := controller.NewPodLogEventController(
+		services.NewPodLogEventService(clinetSet),
 	)
 
 	r := gin.New()
@@ -30,6 +32,9 @@ func main() {
 	r.POST("/:resourceName", resourceContrller.CreateResource)
 	r.DELETE("/resource/:resourceName", resourceContrller.DeleteResource)
 	r.GET("/get/gvr", resourceContrller.GetGVR)
+
+	r.GET("/pods/logs", podLogController.GetPodLog)
+	r.GET("/pods/events", podLogController.GetPodEventList)
 
 	r.Run(":8080")
 	
