@@ -21,8 +21,14 @@ func NewPodLogEventController(logService *services.PodLogEventService) *PodLogEv
 func (p *PodLogEventController) GetPodLog(c *gin.Context) {
 	podName := c.DefaultQuery("podName", "")
 	ns := c.DefaultQuery("namespace", "default")
+	containerName := c.DefaultQuery("container", "")
 
-	k8sReq := p.LogService.GetPodLog(podName, ns)
+	k8sReq, err := p.LogService.GetPodLog(podName, ns, containerName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
 	rc, err := k8sReq.Stream(c)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

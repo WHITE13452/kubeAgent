@@ -112,7 +112,19 @@ func (k *K8sConfig) InitDynamicClient() *dynamic.DynamicClient {
 }
 
 func (k *K8sConfig) InitRESTMapper() meta.RESTMapper {
-	gr, err := restmapper.GetAPIGroupResources(k.InitClientSet().Discovery())
+	clientSet := k.InitClientSet()
+    if clientSet == nil {
+        k.e = errors.Wrap(k.e, "InitRESTMapper failed: clientSet is nil")
+        return nil
+    }
+    
+    discovery := clientSet.Discovery()
+    if discovery == nil {
+        k.e = errors.Wrap(errors.New("discovery client is nil"), "InitRESTMapper failed")
+        return nil
+    }
+
+	gr, err := restmapper.GetAPIGroupResources(discovery)
 	if err != nil {
 		k.e = errors.Wrap(err, "InitRESTMapper:failed to get API group resources")
 		return nil

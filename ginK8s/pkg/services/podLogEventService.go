@@ -11,7 +11,7 @@ import (
 )
 
 type PodLogEventService struct {
-	client *kubernetes.Clientset // Kubernetes client
+	client *kubernetes.Clientset 
 }
 
 func NewPodLogEventService(client *kubernetes.Clientset) *PodLogEventService {
@@ -20,10 +20,42 @@ func NewPodLogEventService(client *kubernetes.Clientset) *PodLogEventService {
 	}
 }
 
-func (p *PodLogEventService) GetPodLog(podName, namespace string) *rest.Request {
-	tailLine := int64(100) // Tail the last 100 lines of logs
-	req := p.client.CoreV1().Pods(namespace).GetLogs(podName, &v1.PodLogOptions{Follow: false, TailLines: &tailLine})
-	return req
+func (p *PodLogEventService) GetPodLog(podName, namespace, containerName string) (*rest.Request, error) {
+
+	if podName == "" {
+		return nil, fmt.Errorf("podName cannot be empty")
+	}
+
+	pod, err := p.client.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod %s in namespace %s: %v", podName, namespace, err)
+	}
+	if pod.Status.Phase != v1.PodRunning {
+		return nil, fmt.Errorf("pod '%s' is in '%s' state, not running. Reason: %s", 
+            podName, pod.Status.Phase, getPodStatusReason(pod))
+	}
+
+	tailLine := int64(100)
+    logOptions := &v1.PodLogOptions{
+        Follow:    false, 
+        TailLines: &tailLine,
+    }
+
+	if containerName != "" {
+        logOptions.Container = containerName
+    }
+    
+    req := p.client.CoreV1().Pods(namespace).GetLogs(podName, logOptions)
+    return req, nil
+}
+
+func getPodStatusReason(pod *v1.Pod) string {
+    for _, containerStatus := range pod.Status.ContainerStatuses {
+        if containerStatus.State.Waiting != nil {
+            return containerStatus.State.Waiting.Reason
+        }
+    }
+    return "Unknown"
 }
 
 func (p *PodLogEventService) GetEventList(podName, namespace string) ([]string, error) {
@@ -53,3 +85,4 @@ func (p *PodLogEventService) GetEventList(podName, namespace string) ([]string, 
 	}
 	return eventMessages, nil
 }
+
