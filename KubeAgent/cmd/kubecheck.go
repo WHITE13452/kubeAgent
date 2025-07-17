@@ -28,7 +28,7 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// Initialize tools 
+		// Initialize tools
 		functionTools := initKubeCheckFunctionTools()
 
 		scanner := bufio.NewScanner(cmd.InOrStdin())
@@ -44,10 +44,14 @@ to quickly create a Cobra application.`,
 				return
 			}
 			prompt := buildKubeCheckPrompt(functionTools.KubeTool, functionTools.RequestTool, functionTools.TavilyTool, functionTools.HumanTool, input)
-			
+
 			ai.MessageStore.AddForUser(prompt)
 			i := 1
-			for {
+			maxIteration := 10
+			consecutiveFailures := 0    // 连续失败计数
+			maxConsecutiveFailures := 3 // 最大连续失败次数
+
+			for i <= maxIteration {
 				firstResponse := ai.NormalChat(ai.MessageStore.ToMessage())
 				fmt.Printf("========第%d轮回答========\n", i)
 				fmt.Println(firstResponse.Content)
@@ -58,12 +62,12 @@ to quickly create a Cobra application.`,
 					if len(finalAnswer) > 1 {
 						fmt.Println("========最终 GPT 回复========")
 						fmt.Println(firstResponse.Content)
-					} 
+					}
 					break
 				}
 
 				// ai.MessageStore.AddForAssistant(firstResponse.Content)
-				
+
 				// Check if the response contains a tool call
 				actionRegex := regexp.MustCompile(`Action:\s*(.*?)[\n]`)
 				actionInputRegex := regexp.MustCompile(`Action Input:\s*(.*)`)
@@ -81,27 +85,46 @@ to quickly create a Cobra application.`,
 					actionInput := actionInputMatch[1]
 
 					var observation string
+
 					switch action {
 					case functionTools.KubeTool.Name:
 						actionInputProcessed := strings.Trim(actionInput, "\"")
+						actionInputProcessed = cleanMarkdownCodeBlock(actionInputProcessed)
 						fmt.Println("actionInputProcessed: ", actionInputProcessed)
-						output, _ := functionTools.KubeTool.Run(actionInputProcessed)
-						fmt.Println("========函数返回结果========")
-						fmt.Println("output: ", output)
-						observation = fmt.Sprintf(observation, output)
+						output, toolErr := functionTools.KubeTool.Run(actionInputProcessed)
+						if toolErr != nil {
+							observation = fmt.Sprintf("Observation: Error executing command: %v", toolErr)
+							consecutiveFailures++
+						} else {
+							fmt.Println("========函数返回结果========")
+							fmt.Println("output: ", output)
+							observation = fmt.Sprintf("Observation: %s", output)
+							consecutiveFailures = 0
+						}
+
 					case functionTools.TavilyTool.Name:
-						output, _ := functionTools.TavilyTool.Run(actionInput)
-						fmt.Println("========函数返回结果========")
-						fmt.Println("output: ", output)
-						observation = fmt.Sprintf(observation, output)
+						output, toolErr := functionTools.TavilyTool.Run(actionInput)
+						if toolErr != nil {
+							observation = fmt.Sprintf("Observation: Error executing Tavily command: %v", toolErr)
+							consecutiveFailures++
+						} else {
+							fmt.Println("========函数返回结果========")
+							fmt.Println("output: ", output)
+							observation = fmt.Sprintf("Observation: %s", output)
+							consecutiveFailures = 0
+						}
 					case functionTools.RequestTool.Name:
 						fmt.Println("actionInput: ", actionInput)
 						actionInputProcessed := strings.Trim(actionInput, "\"")
 						fmt.Println("actionInputProcessed: ", actionInputProcessed)
-						output, _ := functionTools.RequestTool.Run(actionInputProcessed)
-						fmt.Println("========函数返回结果========")
-						fmt.Println("output: ", output)
-						observation = fmt.Sprintf(observation, output)
+						output, toolErr := functionTools.RequestTool.Run(actionInputProcessed)
+						if toolErr != nil {
+							observation = fmt.Sprintf("Observation: Error executing Request command: %v", toolErr)
+							consecutiveFailures++
+						} else {
+							observation = fmt.Sprintf("Observation: %s", output)
+							consecutiveFailures = 0
+						}
 					case "HumanTool":
 						var param tools.HumanToolParam
 						err := json.Unmarshal([]byte(actionInput), &param)
@@ -116,16 +139,24 @@ to quickly create a Cobra application.`,
 						observation = fmt.Sprintf("Unknown action: %s", action)
 					}
 					fmt.Printf("========工具执行结果========\n%s\n", observation)
-                    
-                    // 将 Observation 添加到历史记录，让模型进行下一步思考
-                    ai.MessageStore.AddForUser(observation)
+
+					if consecutiveFailures >= maxConsecutiveFailures {
+						fmt.Printf("连续失败 %d 次，停止执行\n", maxConsecutiveFailures)
+                    	break
+					}
+
+					// 将 Observation 添加到历史记录，让模型进行下一步思考
+					ai.MessageStore.AddForUser(observation)
 
 				} else {
 					// 如果模型没有按预期格式返回 Action，则直接将回复作为最终答案并结束
-                    fmt.Println("模型未返回有效 Action，对话结束。")
-                    fmt.Println(firstResponse.Content)
-                    break
+					fmt.Println("模型未返回有效 Action，对话结束。")
+					fmt.Println(firstResponse.Content)
+					break
 				}
+			}
+			if i > maxIteration {
+				 fmt.Printf("达到最大迭代次数 %d，强制结束对话\n", maxIteration)
 			}
 		}
 	},
@@ -146,18 +177,18 @@ func init() {
 }
 
 type KubeCheckFunctionTools struct {
-	KubeTool *tools.KubeTool
+	KubeTool    *tools.KubeTool
 	RequestTool *tools.RequestTool
-	TavilyTool *tools.TavilyTool
-	HumanTool *tools.HumanTool
+	TavilyTool  *tools.TavilyTool
+	HumanTool   *tools.HumanTool
 }
 
 func initKubeCheckFunctionTools() *KubeCheckFunctionTools {
 	return &KubeCheckFunctionTools{
-		KubeTool: tools.NewKubeTool(),
+		KubeTool:    tools.NewKubeTool(),
 		RequestTool: tools.NewRequestTool(),
-		TavilyTool: tools.NewTavilyTool(),
-		HumanTool: tools.NewHumanTool(),
+		TavilyTool:  tools.NewTavilyTool(),
+		HumanTool:   tools.NewHumanTool(),
 	}
 }
 
@@ -177,4 +208,30 @@ func buildKubeCheckPrompt(kubeTool *tools.KubeTool, requestTool *tools.RequestTo
 	prompt := fmt.Sprintf(prompttpl.Template, toolsList, toolNames, "", query)
 
 	return prompt
+}
+
+func cleanMarkdownCodeBlock(input string) string {
+	// 移除各种 markdown 代码块标记
+	input = strings.TrimSpace(input)
+	input = strings.TrimPrefix(input, "```sh")
+	input = strings.TrimPrefix(input, "```bash")
+	input = strings.TrimPrefix(input, "```")
+	input = strings.TrimSuffix(input, "```")
+	input = strings.TrimSpace(input)
+
+	// 移除多行命令中的换行符，替换为 &&
+	lines := strings.Split(input, "\n")
+	var cleanLines []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			cleanLines = append(cleanLines, line)
+		}
+	}
+
+	if len(cleanLines) > 1 {
+		return strings.Join(cleanLines, " && ")
+	}
+
+	return input
 }
