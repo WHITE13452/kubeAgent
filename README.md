@@ -7,7 +7,7 @@
 [![Status](https://img.shields.io/badge/Status-Active%20Development-orange.svg)](https://github.com/yourusername/kubeagent)
 
 > ⚠️ **项目状态**: 该项目正在积极开发和重构中，API 和功能可能会发生变化。
-> 
+>
 > **Project Status**: This project is under active development and refactoring. APIs and features may change.
 
 ## 📖 项目简介 | Overview
@@ -96,18 +96,21 @@ go run main.go
 ### 使用 | Usage
 
 #### 1. 问题分析模式 | Analysis Mode
+
 ```bash
 ./kubeagent analyze
 >>> 帮我查看 default 命名空间下 nginx pod 的日志
 ```
 
 #### 2. 资源管理模式 | Resource Management Mode
+
 ```bash
 ./kubeagent chat
 >>> 创建一个 nginx deployment
 ```
 
 #### 3. 集群检查模式 | Cluster Check Mode
+
 ```bash
 ./kubeagent kubecheck
 >>> 检查集群状态并搜索最新的 Kubernetes 最佳实践
@@ -115,21 +118,22 @@ go run main.go
 
 ## 🛠️ 可用工具 | Available Tools
 
-| 工具名称 | 功能描述 | 支持模式 |
-|---------|---------|---------|
-| LogTool | 查看 Pod 日志 | analyze |
-| EventTool | 查看 Pod 事件 | analyze |
-| CreateTool | 创建 K8s 资源 | chat |
-| ListTool | 列出 K8s 资源 | chat |
-| DeleteTool | 删除 K8s 资源 | chat |
-| KubeTool | 执行 kubectl 命令 | kubecheck |
-| RequestTool | 网络请求工具 | kubecheck |
-| TavilyTool | 网络搜索工具 | kubecheck |
-| HumanTool | 人工确认工具 | 所有模式 |
+| 工具名称    | 功能描述          | 支持模式  |
+| ----------- | ----------------- | --------- |
+| LogTool     | 查看 Pod 日志     | analyze   |
+| EventTool   | 查看 Pod 事件     | analyze   |
+| CreateTool  | 创建 K8s 资源     | chat      |
+| ListTool    | 列出 K8s 资源     | chat      |
+| DeleteTool  | 删除 K8s 资源     | chat      |
+| KubeTool    | 执行 kubectl 命令 | kubecheck |
+| RequestTool | 网络请求工具      | kubecheck |
+| TavilyTool  | 网络搜索工具      | kubecheck |
+| HumanTool   | 人工确认工具      | 所有模式  |
 
 ## 📝 示例对话 | Example Conversations
 
 ### 故障诊断 | Troubleshooting
+
 ```
 用户: nginx pod 启动失败了，帮我看看是什么问题
 助手: 我来帮你检查 nginx pod 的状态。首先让我查看相关的事件信息...
@@ -141,6 +145,7 @@ go run main.go
 ```
 
 ### 资源创建 | Resource Creation
+
 ```
 用户: 创建一个 nginx deployment，3个副本
 助手: 我来为你创建一个包含3个副本的 nginx deployment...
@@ -154,12 +159,10 @@ nginx deployment 已成功创建，包含3个副本。
 
 > **当前重构进展 | Current Refactoring Progress**
 
-- [x] 统一工具管理系统设计
+- [X] 统一工具管理系统设计
 - [ ] 工具注册系统重构
 - [ ] 配置管理模块优化
 - [ ] 错误处理和日志系统改进
-- [ ] 单元测试完善
-- [ ] API 文档生成
 - [ ] 性能优化
 - [ ] 插件系统实现
 
@@ -171,7 +174,6 @@ nginx deployment 已成功创建，包含3个副本。
 - 🔐 **权限控制**: RBAC 权限管理
 - 🌍 **多集群**: 管理多个 K8s 集群
 - 📝 **配置文件**: YAML/JSON 配置支持
-
 
 ## 🙏 致谢 | Acknowledgments
 
