@@ -244,15 +244,30 @@ func (c *BaseCoordinator) ExecutePlan(ctx *AgentContext, plan *ExecutionPlan) (*
 	var result *Response
 	var err error
 
-	switch plan.ExecutionMode {
-	case ExecutionModeSequential:
-		result, err = c.executeSequential(ctx, plan)
-	case ExecutionModeParallel:
-		result, err = c.executeParallel(ctx, plan)
-	case ExecutionModeConditional:
-		result, err = c.executeConditional(ctx, plan)
-	default:
-		err = fmt.Errorf("unsupported execution mode: %s", plan.ExecutionMode)
+	// Check if any task has dependencies - if so, use dependency-based execution
+	hasDependencies := false
+	for _, task := range plan.Tasks {
+		if len(task.Dependencies) > 0 {
+			hasDependencies = true
+			break
+		}
+	}
+
+	if hasDependencies {
+		// Use dependency-based execution which handles dependencies intelligently
+		result, err = c.executeDependencyBased(ctx, plan)
+	} else {
+		// Use the original execution mode
+		switch plan.ExecutionMode {
+		case ExecutionModeSequential:
+			result, err = c.executeSequential(ctx, plan)
+		case ExecutionModeParallel:
+			result, err = c.executeParallel(ctx, plan)
+		case ExecutionModeConditional:
+			result, err = c.executeConditional(ctx, plan)
+		default:
+			err = fmt.Errorf("unsupported execution mode: %s", plan.ExecutionMode)
+		}
 	}
 
 	if err != nil {
@@ -326,14 +341,22 @@ Available Agent Types:
 Return a JSON array of tasks with this structure:
 [
   {
+    "id": "unique_task_id",
     "type": "diagnose|remediate|audit|optimize|query",
     "description": "Clear description of the task",
     "assigned_agent": "agent_type",
     "input": {
       "key": "value"
-    }
+    },
+    "dependencies": ["task_id1", "task_id2"]
   }
 ]
+
+Notes:
+- Each task must have a unique "id" field
+- "dependencies" is an array of task IDs that must complete before this task can start
+- If a task has no dependencies, use an empty array []
+- Dependencies should form a valid directed acyclic graph (DAG) with no cycles
 
 Respond with only the JSON array.`, request.Input, intent)
 
@@ -349,10 +372,12 @@ Respond with only the JSON array.`, request.Input, intent)
 
 	// Parse JSON response
 	var tasksData []struct {
+		ID            string                 `json:"id"`
 		Type          string                 `json:"type"`
 		Description   string                 `json:"description"`
 		AssignedAgent string                 `json:"assigned_agent"`
 		Input         map[string]interface{} `json:"input"`
+		Dependencies  []string               `json:"dependencies"`
 	}
 
 	if err := json.Unmarshal([]byte(response), &tasksData); err != nil {
@@ -376,13 +401,20 @@ Respond with only the JSON array.`, request.Input, intent)
 	// Convert to Task objects
 	tasks := make([]*Task, 0, len(tasksData))
 	for _, td := range tasksData {
+		// Use LLM-provided ID if present, otherwise generate UUID
+		taskID := td.ID
+		if taskID == "" {
+			taskID = uuid.New().String()
+		}
+
 		task := &Task{
-			ID:            uuid.New().String(),
+			ID:            taskID,
 			Type:          TaskType(td.Type),
 			Description:   td.Description,
 			Status:        TaskStatusPending,
 			AssignedAgent: AgentType(td.AssignedAgent),
 			Input:         td.Input,
+			Dependencies:  td.Dependencies,
 			CreatedAt:     time.Now(),
 		}
 		tasks = append(tasks, task)
@@ -436,6 +468,148 @@ func (c *BaseCoordinator) selectAgentForTask(task *Task) (Agent, error) {
 	}
 
 	return nil, fmt.Errorf("no agent available to handle task type: %s", task.Type)
+}
+
+// validateDependencies validates that task dependencies form a valid DAG
+func (c *BaseCoordinator) validateDependencies(tasks []*Task) error {
+	taskMap := make(map[string]*Task)
+	for _, task := range tasks {
+		taskMap[task.ID] = task
+	}
+
+	// Check that all dependencies exist
+	for _, task := range tasks {
+		for _, depID := range task.Dependencies {
+			if _, exists := taskMap[depID]; !exists {
+				return fmt.Errorf("task %s has invalid dependency: %s (task not found)", task.ID, depID)
+			}
+		}
+	}
+
+	// Check for cycles using DFS
+	visited := make(map[string]bool)
+	recStack := make(map[string]bool)
+
+	var hasCycle func(taskID string) bool
+	hasCycle = func(taskID string) bool {
+		visited[taskID] = true
+		recStack[taskID] = true
+
+		task := taskMap[taskID]
+		for _, depID := range task.Dependencies {
+			if !visited[depID] {
+				if hasCycle(depID) {
+					return true
+				}
+			} else if recStack[depID] {
+				return true
+			}
+		}
+
+		recStack[taskID] = false
+		return false
+	}
+
+	for _, task := range tasks {
+		if !visited[task.ID] {
+			if hasCycle(task.ID) {
+				return fmt.Errorf("circular dependency detected in task: %s", task.ID)
+			}
+		}
+	}
+
+	return nil
+}
+
+// executeDependencyBased executes tasks respecting their dependencies
+func (c *BaseCoordinator) executeDependencyBased(ctx *AgentContext, plan *ExecutionPlan) (*Response, error) {
+	// Validate dependencies first
+	if err := c.validateDependencies(plan.Tasks); err != nil {
+		return nil, fmt.Errorf("invalid task dependencies: %w", err)
+	}
+
+	executedAgents := make([]AgentType, 0)
+	errors := make([]string, 0)
+	results := make(map[string]interface{})
+
+	// Track completed tasks
+	completed := make(map[string]bool)
+	taskMap := make(map[string]*Task)
+	for _, task := range plan.Tasks {
+		taskMap[task.ID] = task
+	}
+
+	// Execute tasks in dependency order
+	for len(completed) < len(plan.Tasks) {
+		// Find tasks that are ready to execute (all dependencies satisfied)
+		readyTasks := make([]*Task, 0)
+		for _, task := range plan.Tasks {
+			if completed[task.ID] {
+				continue
+			}
+
+			// Check if all dependencies are completed
+			allDepsCompleted := true
+			for _, depID := range task.Dependencies {
+				if !completed[depID] {
+					allDepsCompleted = false
+					break
+				}
+			}
+
+			if allDepsCompleted {
+				readyTasks = append(readyTasks, task)
+			}
+		}
+
+		if len(readyTasks) == 0 {
+			// No tasks ready - this shouldn't happen if validation passed
+			return nil, fmt.Errorf("no tasks ready to execute, but %d tasks remaining", len(plan.Tasks)-len(completed))
+		}
+
+		// Execute ready tasks in parallel
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+
+		for _, task := range readyTasks {
+			wg.Add(1)
+			go func(t *Task) {
+				defer wg.Done()
+
+				result, err := c.Execute(ctx, t)
+
+				mu.Lock()
+				defer mu.Unlock()
+
+				completed[t.ID] = true
+				if err != nil {
+					errors = append(errors, fmt.Sprintf("Task %s failed: %s", t.ID, err.Error()))
+				} else {
+					executedAgents = append(executedAgents, t.AssignedAgent)
+					if result.Output != nil {
+						results[t.ID] = result.Output
+					}
+				}
+			}(task)
+		}
+
+		wg.Wait()
+	}
+
+	// Generate final response
+	finalResult := c.generateFinalResponse(ctx, plan, results)
+
+	response := &Response{
+		RequestID:   plan.RequestID,
+		Status:      plan.Status,
+		Result:      finalResult,
+		Data:        results,
+		Errors:      errors,
+		ExecutedBy:  executedAgents,
+		CompletedAt: time.Now(),
+	}
+
+	return response, nil
 }
 
 // executeSequential executes tasks sequentially
