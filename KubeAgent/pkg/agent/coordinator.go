@@ -241,34 +241,11 @@ func (c *BaseCoordinator) ExecutePlan(ctx *AgentContext, plan *ExecutionPlan) (*
 	plan.Status = TaskStatusRunning
 	ctx.ExecutionPlan = plan
 
-	var result *Response
-	var err error
-
-	// Check if any task has dependencies - if so, use dependency-based execution
-	hasDependencies := false
-	for _, task := range plan.Tasks {
-		if len(task.Dependencies) > 0 {
-			hasDependencies = true
-			break
-		}
-	}
-
-	if hasDependencies {
-		// Use dependency-based execution which handles dependencies intelligently
-		result, err = c.executeDependencyBased(ctx, plan)
-	} else {
-		// Use the original execution mode
-		switch plan.ExecutionMode {
-		case ExecutionModeSequential:
-			result, err = c.executeSequential(ctx, plan)
-		case ExecutionModeParallel:
-			result, err = c.executeParallel(ctx, plan)
-		case ExecutionModeConditional:
-			result, err = c.executeConditional(ctx, plan)
-		default:
-			err = fmt.Errorf("unsupported execution mode: %s", plan.ExecutionMode)
-		}
-	}
+	// Use unified dependency-based execution which handles:
+	// - Tasks without dependencies: executed in parallel in the first round
+	// - Tasks with dependencies: executed in topological order (DAG)
+	// - Tasks with conditions: checked before execution, skipped if not met
+	result, err := c.executeDependencyBased(ctx, plan)
 
 	if err != nil {
 		plan.Status = TaskStatusFailed
@@ -279,7 +256,7 @@ func (c *BaseCoordinator) ExecutePlan(ctx *AgentContext, plan *ExecutionPlan) (*
 	} else {
 		plan.Status = TaskStatusCompleted
 		c.logger.Info("Plan execution completed", map[string]interface{}{
-			"plan_id": plan.ID,
+			"plan_id":  plan.ID,
 			"duration": time.Since(startTime).String(),
 		})
 	}
@@ -348,7 +325,11 @@ Return a JSON array of tasks with this structure:
     "input": {
       "key": "value"
     },
-    "dependencies": ["task_id1", "task_id2"]
+    "dependencies": ["task_id1", "task_id2"],
+    "condition": {
+      "on_success": ["task_id"],
+      "on_failure": ["task_id"]
+    }
   }
 ]
 
@@ -357,6 +338,12 @@ Notes:
 - "dependencies" is an array of task IDs that must complete before this task can start
 - If a task has no dependencies, use an empty array []
 - Dependencies should form a valid directed acyclic graph (DAG) with no cycles
+- "condition" is optional and defines when this task should execute:
+  - "on_success": only execute if ALL specified tasks completed successfully
+  - "on_failure": only execute if ANY specified task failed
+  - If both are specified, on_success takes precedence
+  - Tasks in condition must also be in dependencies
+  - Omit condition for tasks that should always execute when dependencies are met
 
 Respond with only the JSON array.`, request.Input, intent)
 
@@ -378,6 +365,10 @@ Respond with only the JSON array.`, request.Input, intent)
 		AssignedAgent string                 `json:"assigned_agent"`
 		Input         map[string]interface{} `json:"input"`
 		Dependencies  []string               `json:"dependencies"`
+		Condition     *struct {
+			OnSuccess []string `json:"on_success"`
+			OnFailure []string `json:"on_failure"`
+		} `json:"condition"`
 	}
 
 	if err := json.Unmarshal([]byte(response), &tasksData); err != nil {
@@ -417,28 +408,48 @@ Respond with only the JSON array.`, request.Input, intent)
 			Dependencies:  td.Dependencies,
 			CreatedAt:     time.Now(),
 		}
+
+		// Convert condition if present
+		if td.Condition != nil {
+			task.Condition = &TaskCondition{
+				OnSuccess: td.Condition.OnSuccess,
+				OnFailure: td.Condition.OnFailure,
+			}
+		}
+
 		tasks = append(tasks, task)
 	}
 
 	return tasks, nil
 }
 
-// determineExecutionMode determines how tasks should be executed
+// determineExecutionMode determines the semantic execution mode for logging/monitoring.
+// Note: All execution now uses the unified dependency-based executor which handles
+// dependencies, parallelism, and conditions automatically.
 func (c *BaseCoordinator) determineExecutionMode(tasks []*Task) ExecutionMode {
-	// Simple heuristic: if tasks have dependencies, use sequential
-	// Otherwise use parallel if there are multiple tasks
+	hasConditions := false
 	hasDependencies := false
+
 	for _, task := range tasks {
+		if task.Condition != nil {
+			hasConditions = true
+		}
 		if len(task.Dependencies) > 0 {
 			hasDependencies = true
-			break
 		}
 	}
 
+	// Conditional mode takes precedence as it's the most complex
+	if hasConditions {
+		return ExecutionModeConditional
+	}
+
+	// If tasks have dependencies, they'll be executed in DAG order
 	if hasDependencies {
 		return ExecutionModeSequential
 	}
 
+	// Multiple independent tasks can run in parallel
 	if len(tasks) > 1 {
 		return ExecutionModeParallel
 	}
@@ -521,7 +532,48 @@ func (c *BaseCoordinator) validateDependencies(tasks []*Task) error {
 	return nil
 }
 
-// executeDependencyBased executes tasks respecting their dependencies
+// checkTaskCondition checks if a task's condition is satisfied based on dependency results
+// Returns: (shouldExecute bool, reason string)
+func (c *BaseCoordinator) checkTaskCondition(task *Task, taskMap map[string]*Task) (bool, string) {
+	if task.Condition == nil {
+		return true, ""
+	}
+
+	// Check OnSuccess condition: ALL specified tasks must have succeeded
+	if len(task.Condition.OnSuccess) > 0 {
+		for _, depID := range task.Condition.OnSuccess {
+			depTask, exists := taskMap[depID]
+			if !exists {
+				return false, fmt.Sprintf("condition dependency %s not found", depID)
+			}
+			if depTask.Status != TaskStatusCompleted {
+				return false, fmt.Sprintf("condition not met: task %s did not succeed (status: %s)", depID, depTask.Status)
+			}
+		}
+	}
+
+	// Check OnFailure condition: ANY specified task must have failed
+	if len(task.Condition.OnFailure) > 0 {
+		anyFailed := false
+		for _, depID := range task.Condition.OnFailure {
+			depTask, exists := taskMap[depID]
+			if !exists {
+				continue
+			}
+			if depTask.Status == TaskStatusFailed {
+				anyFailed = true
+				break
+			}
+		}
+		if !anyFailed {
+			return false, "condition not met: no specified task failed"
+		}
+	}
+
+	return true, ""
+}
+
+// executeDependencyBased executes tasks respecting their dependencies and conditions
 func (c *BaseCoordinator) executeDependencyBased(ctx *AgentContext, plan *ExecutionPlan) (*Response, error) {
 	// Validate dependencies first
 	if err := c.validateDependencies(plan.Tasks); err != nil {
@@ -532,39 +584,39 @@ func (c *BaseCoordinator) executeDependencyBased(ctx *AgentContext, plan *Execut
 	errors := make([]string, 0)
 	results := make(map[string]interface{})
 
-	// Track completed tasks
-	completed := make(map[string]bool)
+	// Track task processing status (whether it's been processed, not just completed)
+	processed := make(map[string]bool)
 	taskMap := make(map[string]*Task)
 	for _, task := range plan.Tasks {
 		taskMap[task.ID] = task
 	}
 
 	// Execute tasks in dependency order
-	for len(completed) < len(plan.Tasks) {
-		// Find tasks that are ready to execute (all dependencies satisfied)
+	for len(processed) < len(plan.Tasks) {
+		// Find tasks that are ready to process (all dependencies satisfied)
 		readyTasks := make([]*Task, 0)
 		for _, task := range plan.Tasks {
-			if completed[task.ID] {
+			if processed[task.ID] {
 				continue
 			}
 
-			// Check if all dependencies are completed
-			allDepsCompleted := true
+			// Check if all dependencies are processed (completed, failed, or skipped)
+			allDepsProcessed := true
 			for _, depID := range task.Dependencies {
-				if !completed[depID] {
-					allDepsCompleted = false
+				if !processed[depID] {
+					allDepsProcessed = false
 					break
 				}
 			}
 
-			if allDepsCompleted {
+			if allDepsProcessed {
 				readyTasks = append(readyTasks, task)
 			}
 		}
 
 		if len(readyTasks) == 0 {
 			// No tasks ready - this shouldn't happen if validation passed
-			return nil, fmt.Errorf("no tasks ready to execute, but %d tasks remaining", len(plan.Tasks)-len(completed))
+			return nil, fmt.Errorf("no tasks ready to execute, but %d tasks remaining", len(plan.Tasks)-len(processed))
 		}
 
 		// Execute ready tasks in parallel
@@ -576,12 +628,33 @@ func (c *BaseCoordinator) executeDependencyBased(ctx *AgentContext, plan *Execut
 			go func(t *Task) {
 				defer wg.Done()
 
+				mu.Lock()
+				// Check condition before executing
+				shouldExecute, reason := c.checkTaskCondition(t, taskMap)
+				mu.Unlock()
+
+				if !shouldExecute {
+					// Skip this task
+					mu.Lock()
+					t.Status = TaskStatusSkipped
+					t.Error = reason
+					processed[t.ID] = true
+					now := time.Now()
+					t.CompletedAt = &now
+					c.logger.Info("Task skipped due to condition", map[string]interface{}{
+						"task_id": t.ID,
+						"reason":  reason,
+					})
+					mu.Unlock()
+					return
+				}
+
 				result, err := c.Execute(ctx, t)
 
 				mu.Lock()
 				defer mu.Unlock()
 
-				completed[t.ID] = true
+				processed[t.ID] = true
 				if err != nil {
 					errors = append(errors, fmt.Sprintf("Task %s failed: %s", t.ID, err.Error()))
 				} else {
@@ -610,96 +683,6 @@ func (c *BaseCoordinator) executeDependencyBased(ctx *AgentContext, plan *Execut
 	}
 
 	return response, nil
-}
-
-// executeSequential executes tasks sequentially
-func (c *BaseCoordinator) executeSequential(ctx *AgentContext, plan *ExecutionPlan) (*Response, error) {
-	executedAgents := make([]AgentType, 0)
-	errors := make([]string, 0)
-	results := make(map[string]interface{})
-
-	for _, task := range plan.Tasks {
-		result, err := c.Execute(ctx, task)
-		if err != nil {
-			errors = append(errors, fmt.Sprintf("Task %s failed: %s", task.ID, err.Error()))
-			// Continue with other tasks even if one fails
-		} else {
-			executedAgents = append(executedAgents, task.AssignedAgent)
-			if result.Output != nil {
-				results[task.ID] = result.Output
-			}
-		}
-	}
-
-	// Generate final response
-	finalResult := c.generateFinalResponse(ctx, plan, results)
-
-	response := &Response{
-		RequestID:   plan.RequestID,
-		Status:      plan.Status,
-		Result:      finalResult,
-		Data:        results,
-		Errors:      errors,
-		ExecutedBy:  executedAgents,
-		CompletedAt: time.Now(),
-	}
-
-	return response, nil
-}
-
-// executeParallel executes tasks in parallel
-func (c *BaseCoordinator) executeParallel(ctx *AgentContext, plan *ExecutionPlan) (*Response, error) {
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	executedAgents := make([]AgentType, 0)
-	errors := make([]string, 0)
-	results := make(map[string]interface{})
-
-	for _, task := range plan.Tasks {
-		wg.Add(1)
-		go func(t *Task) {
-			defer wg.Done()
-
-			result, err := c.Execute(ctx, t)
-
-			mu.Lock()
-			defer mu.Unlock()
-
-			if err != nil {
-				errors = append(errors, fmt.Sprintf("Task %s failed: %s", t.ID, err.Error()))
-			} else {
-				executedAgents = append(executedAgents, t.AssignedAgent)
-				if result.Output != nil {
-					results[t.ID] = result.Output
-				}
-			}
-		}(task)
-	}
-
-	wg.Wait()
-
-	// Generate final response
-	finalResult := c.generateFinalResponse(ctx, plan, results)
-
-	response := &Response{
-		RequestID:   plan.RequestID,
-		Status:      plan.Status,
-		Result:      finalResult,
-		Data:        results,
-		Errors:      errors,
-		ExecutedBy:  executedAgents,
-		CompletedAt: time.Now(),
-	}
-
-	return response, nil
-}
-
-// executeConditional executes tasks with conditional logic
-func (c *BaseCoordinator) executeConditional(ctx *AgentContext, plan *ExecutionPlan) (*Response, error) {
-	// For now, just use sequential execution
-	// TODO: Implement conditional logic based on task results
-	return c.executeSequential(ctx, plan)
 }
 
 // generateFinalResponse generates the final response using LLM

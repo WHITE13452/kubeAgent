@@ -26,6 +26,7 @@ const (
 	TaskStatusCompleted  TaskStatus = "completed"
 	TaskStatusFailed     TaskStatus = "failed"
 	TaskStatusCancelled  TaskStatus = "cancelled"
+	TaskStatusSkipped    TaskStatus = "skipped"
 )
 
 // TaskType represents different types of tasks
@@ -71,6 +72,14 @@ type Response struct {
 	CompletedAt time.Time              `json:"completed_at"`
 }
 
+// TaskCondition defines conditions for task execution
+type TaskCondition struct {
+	// OnSuccess specifies task IDs that must succeed for this task to execute
+	OnSuccess []string `json:"on_success,omitempty"`
+	// OnFailure specifies task IDs that must fail for this task to execute
+	OnFailure []string `json:"on_failure,omitempty"`
+}
+
 // Task represents a unit of work to be executed by an agent
 type Task struct {
 	ID            string                 `json:"id"`
@@ -82,6 +91,7 @@ type Task struct {
 	Output        map[string]interface{} `json:"output,omitempty"`
 	Error         string                 `json:"error,omitempty"`
 	Dependencies  []string               `json:"dependencies,omitempty"`
+	Condition     *TaskCondition         `json:"condition,omitempty"`
 	CreatedAt     time.Time              `json:"created_at"`
 	StartedAt     *time.Time             `json:"started_at,omitempty"`
 	CompletedAt   *time.Time             `json:"completed_at,omitempty"`
