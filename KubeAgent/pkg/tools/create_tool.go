@@ -1,18 +1,19 @@
 package tools
 
 import (
-	"encoding/json"
 	"fmt"
-	"kubeagent/cmd/utils"
-	"strings"
+
+	"kubeagent/pkg/k8s"
 )
 
-// CreateTool creates a K8s resource via the ginK8s backend.
+// CreateTool creates a K8s resource directly via the Kubernetes API.
 // The caller (agent/LLM) is responsible for generating the YAML content.
-type CreateTool struct{}
+type CreateTool struct {
+	client *k8s.Client
+}
 
-func NewCreateTool() *CreateTool {
-	return &CreateTool{}
+func NewCreateTool(client *k8s.Client) *CreateTool {
+	return &CreateTool{client: client}
 }
 
 func (c *CreateTool) Name() string {
@@ -20,32 +21,18 @@ func (c *CreateTool) Name() string {
 }
 
 func (c *CreateTool) Description() string {
-	return "用于在 Kubernetes 集群中创建资源（Pod、Service、Deployment 等），需要提供资源 YAML 内容和资源类型"
+	return "用于在 Kubernetes 集群中创建资源（Pod、Service、Deployment 等），需要提供资源 YAML 内容"
 }
 
 func (c *CreateTool) ArgsSchema() string {
-	return `{"type":"object","properties":{"yaml":{"type":"string","description":"要创建的 K8s 资源的 YAML 内容"},"resource":{"type":"string","description":"K8s 资源类型，例如 pod、service、deployment"}},"required":["yaml","resource"]}`
+	return `{"type":"object","properties":{"yaml":{"type":"string","description":"要创建的 K8s 资源的 YAML 内容"}},"required":["yaml"]}`
 }
 
 func (c *CreateTool) Execute(params map[string]any) (string, error) {
-	yaml, ok := params["yaml"].(string)
-	if !ok || yaml == "" {
+	yamlContent, ok := params["yaml"].(string)
+	if !ok || yamlContent == "" {
 		return "", fmt.Errorf("yaml is required")
 	}
-	resource, ok := params["resource"].(string)
-	if !ok || resource == "" {
-		return "", fmt.Errorf("resource is required")
-	}
 
-	resource = strings.ToLower(resource)
-	requestBody, err := json.Marshal(map[string]string{"yaml": yaml})
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	resp, err := utils.PostHTTP("http://localhost:8080/"+resource, requestBody)
-	if err != nil {
-		return "", fmt.Errorf("failed to create %s: %w", resource, err)
-	}
-	return resp, nil
+	return c.client.CreateResource(yamlContent)
 }

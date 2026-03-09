@@ -2,15 +2,18 @@ package tools
 
 import (
 	"fmt"
-	"kubeagent/cmd/utils"
 	"strings"
+
+	"kubeagent/pkg/k8s"
 )
 
-// ListTool lists K8s resources in a namespace
-type ListTool struct{}
+// ListTool lists K8s resources directly from the Kubernetes API.
+type ListTool struct {
+	client *k8s.Client
+}
 
-func NewListTool() *ListTool {
-	return &ListTool{}
+func NewListTool(client *k8s.Client) *ListTool {
+	return &ListTool{client: client}
 }
 
 func (l *ListTool) Name() string {
@@ -36,10 +39,5 @@ func (l *ListTool) Execute(params map[string]any) (string, error) {
 	}
 
 	resource = strings.ToLower(resource)
-	url := "http://localhost:8080/" + resource + "?namespace=" + namespace
-	resp, err := utils.GetHTTP(url)
-	if err != nil {
-		return "", fmt.Errorf("failed to list %s: %w", resource, err)
-	}
-	return resp, nil
+	return l.client.ListResources(resource, namespace)
 }

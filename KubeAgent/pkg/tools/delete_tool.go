@@ -2,16 +2,19 @@ package tools
 
 import (
 	"fmt"
-	"kubeagent/cmd/utils"
 	"strings"
+
+	"kubeagent/pkg/k8s"
 )
 
-// DeleteTool deletes a K8s resource via the ginK8s backend.
+// DeleteTool deletes a K8s resource directly via the Kubernetes API.
 // Dangerous: must only be called after HumanTool returns "approved".
-type DeleteTool struct{}
+type DeleteTool struct {
+	client *k8s.Client
+}
 
-func NewDeleteTool() *DeleteTool {
-	return &DeleteTool{}
+func NewDeleteTool(client *k8s.Client) *DeleteTool {
+	return &DeleteTool{client: client}
 }
 
 func (d *DeleteTool) Name() string {
@@ -41,10 +44,5 @@ func (d *DeleteTool) Execute(params map[string]any) (string, error) {
 	}
 
 	resource = strings.ToLower(resource)
-	url := "http://localhost:8080/resource/" + resource + "?namespace=" + namespace + "&name=" + name
-	resp, err := utils.DeleteHTTP(url)
-	if err != nil {
-		return "", fmt.Errorf("failed to delete %s/%s: %w", resource, name, err)
-	}
-	return resp, nil
+	return d.client.DeleteResource(resource, name, namespace)
 }

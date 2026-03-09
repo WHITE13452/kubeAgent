@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubeagent
+  namespace: kubeagent
+  labels:
+    app: kubeagent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kubeagent
+  template:
+    metadata:
+      labels:
+        app: kubeagent
+    spec:
+      serviceAccountName: kubeagent
+      containers:
+        - name: kubeagent
+          image: kubeagent:latest
+          imagePullPolicy: IfNotPresent
+          # Keep pod alive for kubectl exec
+          command: ["sleep", "infinity"]
+          env:
+            - name: DASHSCOPE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: kubeagent-secrets
+                  key: dashscope-api-key
+            # Uncomment if you have a Tavily API key
+            # - name: TAVILY_API_KEY
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: kubeagent-secrets
+            #       key: tavily-api-key
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

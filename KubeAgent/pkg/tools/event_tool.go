@@ -2,14 +2,17 @@ package tools
 
 import (
 	"fmt"
-	"kubeagent/cmd/utils"
+
+	"kubeagent/pkg/k8s"
 )
 
-// EventTool gets K8s events for a pod
-type EventTool struct{}
+// EventTool gets K8s warning events for a pod directly from the Kubernetes API.
+type EventTool struct {
+	client *k8s.Client
+}
 
-func NewEventTool() *EventTool {
-	return &EventTool{}
+func NewEventTool(client *k8s.Client) *EventTool {
+	return &EventTool{client: client}
 }
 
 func (e *EventTool) Name() string {
@@ -34,10 +37,5 @@ func (e *EventTool) Execute(params map[string]any) (string, error) {
 		namespace = "default"
 	}
 
-	url := "http://localhost:8080/pods/events?namespace=" + namespace + "&podName=" + podName
-	resp, err := utils.GetHTTP(url)
-	if err != nil {
-		return "", fmt.Errorf("failed to get pod events: %w", err)
-	}
-	return resp, nil
+	return e.client.GetPodEvents(podName, namespace)
 }

@@ -10,6 +10,7 @@ import (
 
 	"kubeagent/pkg/agent"
 	"kubeagent/pkg/agent/specialists"
+	"kubeagent/pkg/k8s"
 	pkgtools "kubeagent/pkg/tools"
 )
 
@@ -27,19 +28,25 @@ var chatCmd = &cobra.Command{
 			return
 		}
 
+		k8sClient, err := k8s.NewClient()
+		if err != nil {
+			fmt.Printf("Failed to initialize K8s client: %v\n", err)
+			return
+		}
+
 		coordinator := agent.NewCoordinator(nil, llmClient, stateStore, logger)
 
 		// DiagnosticianAgent handles read/query operations
 		diagnostician := specialists.NewDiagnosticianAgent(llmClient, logger)
-		diagnostician.AddTool(pkgtools.NewListTool())
-		diagnostician.AddTool(pkgtools.NewLogTool())
+		diagnostician.AddTool(pkgtools.NewListTool(k8sClient))
+		diagnostician.AddTool(pkgtools.NewLogTool(k8sClient))
 		coordinator.RegisterAgent(diagnostician)
 
 		// RemediatorAgent handles write operations (create, delete) with human confirmation
 		remediator := specialists.NewRemediatorAgent(llmClient, logger)
 		remediator.AddTool(pkgtools.NewHumanTool())
-		remediator.AddTool(pkgtools.NewCreateTool())
-		remediator.AddTool(pkgtools.NewDeleteTool())
+		remediator.AddTool(pkgtools.NewCreateTool(k8sClient))
+		remediator.AddTool(pkgtools.NewDeleteTool(k8sClient))
 		coordinator.RegisterAgent(remediator)
 
 		scanner := bufio.NewScanner(cmd.InOrStdin())

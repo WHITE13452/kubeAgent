@@ -11,6 +11,7 @@ import (
 
 	"kubeagent/pkg/agent"
 	"kubeagent/pkg/agent/specialists"
+	"kubeagent/pkg/k8s"
 	pkgtools "kubeagent/pkg/tools"
 )
 
@@ -28,14 +29,20 @@ var kubecheckCmd = &cobra.Command{
 			return
 		}
 
+		k8sClient, err := k8s.NewClient()
+		if err != nil {
+			fmt.Printf("Failed to initialize K8s client: %v\n", err)
+			return
+		}
+
 		coordinator := agent.NewCoordinator(nil, llmClient, stateStore, logger)
 
 		// DiagnosticianAgent handles query/inspect tasks with kubectl + web search tools
 		diagnostician := specialists.NewDiagnosticianAgent(llmClient, logger)
 		diagnostician.AddTool(pkgtools.NewKubeTool())
-		diagnostician.AddTool(pkgtools.NewListTool())
-		diagnostician.AddTool(pkgtools.NewLogTool())
-		diagnostician.AddTool(pkgtools.NewEventTool())
+		diagnostician.AddTool(pkgtools.NewListTool(k8sClient))
+		diagnostician.AddTool(pkgtools.NewLogTool(k8sClient))
+		diagnostician.AddTool(pkgtools.NewEventTool(k8sClient))
 		diagnostician.AddTool(pkgtools.NewRequestTool())
 
 		tavilyAPIKey := os.Getenv("TAVILY_API_KEY")

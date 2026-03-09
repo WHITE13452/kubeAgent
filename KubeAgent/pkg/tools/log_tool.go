@@ -2,14 +2,17 @@ package tools
 
 import (
 	"fmt"
-	"kubeagent/cmd/utils"
+
+	"kubeagent/pkg/k8s"
 )
 
-// LogTool gets pod logs from the ginK8s backend
-type LogTool struct{}
+// LogTool gets pod logs directly from the Kubernetes API.
+type LogTool struct {
+	client *k8s.Client
+}
 
-func NewLogTool() *LogTool {
-	return &LogTool{}
+func NewLogTool(client *k8s.Client) *LogTool {
+	return &LogTool{client: client}
 }
 
 func (l *LogTool) Name() string {
@@ -35,10 +38,5 @@ func (l *LogTool) Execute(params map[string]any) (string, error) {
 	}
 	container, _ := params["container"].(string)
 
-	url := "http://localhost:8080/pods/logs?namespace=" + namespace + "&podName=" + podName + "&container=" + container
-	resp, err := utils.GetHTTP(url)
-	if err != nil {
-		return "", fmt.Errorf("failed to get pod logs: %w", err)
-	}
-	return resp, nil
+	return l.client.GetPodLogs(podName, namespace, container)
 }

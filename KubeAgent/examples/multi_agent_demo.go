@@ -8,6 +8,7 @@ import (
 
 	"kubeagent/pkg/agent"
 	"kubeagent/pkg/agent/specialists"
+	"kubeagent/pkg/k8s"
 	pkgtools "kubeagent/pkg/tools"
 )
 
@@ -25,20 +26,26 @@ func main() {
 		log.Fatalf("Failed to create LLM client: %v", err)
 	}
 
+	// Initialize K8s client (auto-detects in-cluster or kubeconfig)
+	k8sClient, err := k8s.NewClient()
+	if err != nil {
+		log.Fatalf("Failed to create K8s client: %v", err)
+	}
+
 	// Create coordinator
 	coordinator := agent.NewCoordinator(nil, llmClient, stateStore, logger)
 
 	// Create and register specialist agents with their tools
 	diagnostician := specialists.NewDiagnosticianAgent(llmClient, logger)
-	diagnostician.AddTool(pkgtools.NewLogTool())
-	diagnostician.AddTool(pkgtools.NewEventTool())
-	diagnostician.AddTool(pkgtools.NewListTool())
+	diagnostician.AddTool(pkgtools.NewLogTool(k8sClient))
+	diagnostician.AddTool(pkgtools.NewEventTool(k8sClient))
+	diagnostician.AddTool(pkgtools.NewListTool(k8sClient))
 	diagnostician.AddTool(pkgtools.NewKubeTool())
 
 	remediator := specialists.NewRemediatorAgent(llmClient, logger)
 	remediator.AddTool(pkgtools.NewHumanTool())
-	remediator.AddTool(pkgtools.NewCreateTool())
-	remediator.AddTool(pkgtools.NewDeleteTool())
+	remediator.AddTool(pkgtools.NewCreateTool(k8sClient))
+	remediator.AddTool(pkgtools.NewDeleteTool(k8sClient))
 
 	if err := coordinator.RegisterAgent(diagnostician); err != nil {
 		log.Fatalf("Failed to register diagnostician: %v", err)
@@ -48,9 +55,9 @@ func main() {
 		log.Fatalf("Failed to register remediator: %v", err)
 	}
 
-	fmt.Println("✓ Coordinator and specialist agents initialized")
-	fmt.Println("✓ Registered agents: Diagnostician (LogTool, EventTool, ListTool, KubeTool)")
-	fmt.Println("✓                    Remediator    (HumanTool, CreateTool, DeleteTool)")
+	fmt.Println("Coordinator and specialist agents initialized")
+	fmt.Println("Registered agents: Diagnostician (LogTool, EventTool, ListTool, KubeTool)")
+	fmt.Println("                   Remediator    (HumanTool, CreateTool, DeleteTool)")
 	fmt.Println()
 
 	// Example 1: Simple diagnosis task
@@ -90,11 +97,11 @@ func runDiagnosisExample(coordinator *agent.BaseCoordinator, stateStore *agent.M
 
 	result, err := coordinator.Execute(ctx, task)
 	if err != nil {
-		fmt.Printf("✗ Diagnosis failed: %v\n", err)
+		fmt.Printf("Diagnosis failed: %v\n", err)
 		return
 	}
 
-	fmt.Println("✓ Diagnosis completed")
+	fmt.Println("Diagnosis completed")
 	printTaskResult(result)
 }
 
@@ -123,11 +130,11 @@ func runDiagnosisRemediationWorkflow(coordinator *agent.BaseCoordinator, stateSt
 
 	diagnosisResult, err := coordinator.Execute(ctx, diagnosisTask)
 	if err != nil {
-		fmt.Printf("✗ Diagnosis failed: %v\n", err)
+		fmt.Printf("Diagnosis failed: %v\n", err)
 		return
 	}
 
-	fmt.Println("✓ Step 1: Diagnosis completed")
+	fmt.Println("Step 1: Diagnosis completed")
 	fmt.Printf("  Root Cause: %v\n", diagnosisResult.Output["root_cause"])
 
 	// Step 2: Remediation
@@ -146,11 +153,11 @@ func runDiagnosisRemediationWorkflow(coordinator *agent.BaseCoordinator, stateSt
 
 	remediationResult, err := coordinator.Execute(ctx, remediationTask)
 	if err != nil {
-		fmt.Printf("✗ Remediation failed: %v\n", err)
+		fmt.Printf("Remediation failed: %v\n", err)
 		return
 	}
 
-	fmt.Println("✓ Step 2: Remediation plan generated")
+	fmt.Println("Step 2: Remediation plan generated")
 	fmt.Printf("  Remediation Type: %v\n", remediationResult.Output["remediation_type"])
 	fmt.Printf("  Risk Level: %v\n", remediationResult.Output["risk_level"])
 	fmt.Printf("  Requires Approval: %v\n", remediationResult.Output["requires_approval"])
@@ -179,11 +186,11 @@ func runFullRequestExample(coordinator *agent.BaseCoordinator, stateStore *agent
 	// Create execution plan
 	plan, err := coordinator.Plan(ctx, request)
 	if err != nil {
-		fmt.Printf("✗ Planning failed: %v\n", err)
+		fmt.Printf("Planning failed: %v\n", err)
 		return
 	}
 
-	fmt.Printf("✓ Execution plan created with %d tasks\n", len(plan.Tasks))
+	fmt.Printf("Execution plan created with %d tasks\n", len(plan.Tasks))
 	fmt.Printf("  Execution Mode: %s\n", plan.ExecutionMode)
 
 	for i, task := range plan.Tasks {
@@ -193,11 +200,11 @@ func runFullRequestExample(coordinator *agent.BaseCoordinator, stateStore *agent
 	// Execute plan
 	response, err := coordinator.ExecutePlan(ctx, plan)
 	if err != nil {
-		fmt.Printf("✗ Execution failed: %v\n", err)
+		fmt.Printf("Execution failed: %v\n", err)
 		return
 	}
 
-	fmt.Println("\n✓ Plan execution completed")
+	fmt.Println("\nPlan execution completed")
 	fmt.Printf("  Status: %s\n", response.Status)
 	fmt.Printf("  Executed by: %v\n", response.ExecutedBy)
 	fmt.Printf("  Duration: %v\n", response.Duration)
