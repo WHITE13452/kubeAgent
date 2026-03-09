@@ -8,10 +8,12 @@ import (
 
 	"kubeagent/pkg/agent"
 	"kubeagent/pkg/agent/specialists"
+	pkgtools "kubeagent/pkg/tools"
 )
 
 func main() {
-	fmt.Println("=== KubeAgent Multi-Agent Framework Demo ===\n")
+	fmt.Println("=== KubeAgent Multi-Agent Framework Demo ===")
+	fmt.Println()
 
 	// Initialize components
 	logger := agent.NewSimpleLogger("KubeAgent")
@@ -26,9 +28,17 @@ func main() {
 	// Create coordinator
 	coordinator := agent.NewCoordinator(nil, llmClient, stateStore, logger)
 
-	// Create and register specialist agents
+	// Create and register specialist agents with their tools
 	diagnostician := specialists.NewDiagnosticianAgent(llmClient, logger)
+	diagnostician.AddTool(pkgtools.NewLogTool())
+	diagnostician.AddTool(pkgtools.NewEventTool())
+	diagnostician.AddTool(pkgtools.NewListTool())
+	diagnostician.AddTool(pkgtools.NewKubeTool())
+
 	remediator := specialists.NewRemediatorAgent(llmClient, logger)
+	remediator.AddTool(pkgtools.NewHumanTool())
+	remediator.AddTool(pkgtools.NewCreateTool())
+	remediator.AddTool(pkgtools.NewDeleteTool())
 
 	if err := coordinator.RegisterAgent(diagnostician); err != nil {
 		log.Fatalf("Failed to register diagnostician: %v", err)
@@ -39,7 +49,9 @@ func main() {
 	}
 
 	fmt.Println("✓ Coordinator and specialist agents initialized")
-	fmt.Println("✓ Registered agents: Diagnostician, Remediator\n")
+	fmt.Println("✓ Registered agents: Diagnostician (LogTool, EventTool, ListTool, KubeTool)")
+	fmt.Println("✓                    Remediator    (HumanTool, CreateTool, DeleteTool)")
+	fmt.Println()
 
 	// Example 1: Simple diagnosis task
 	runDiagnosisExample(coordinator, stateStore, logger)

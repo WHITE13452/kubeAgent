@@ -23,10 +23,8 @@ func NewDiagnosticianAgent(llmClient agent.LLMClient, logger agent.Logger) *Diag
 		Timeout:     2 * time.Minute,
 	}
 
-	baseAgent := agent.NewBaseAgent(config, llmClient, logger)
-
 	return &DiagnosticianAgent{
-		BaseAgent: baseAgent,
+		BaseAgent: agent.NewBaseAgent(config, llmClient, logger),
 	}
 }
 
@@ -39,17 +37,11 @@ func (d *DiagnosticianAgent) CanHandle(taskType agent.TaskType) bool {
 func (d *DiagnosticianAgent) Execute(ctx *agent.AgentContext, task *agent.Task) (*agent.Task, error) {
 	startTime := time.Now()
 
-	d.BaseAgent.Config().Name = "diagnostician"
-	logger := d.BaseAgent.Config()
-
-	// Extract input parameters
 	podName, _ := task.Input["pod_name"].(string)
-	namespace, _ := task.Input["namespace"].(string)
-
 	if podName == "" {
-		// Try to extract from description
 		podName, _ = task.Input["podName"].(string)
 	}
+	namespace, _ := task.Input["namespace"].(string)
 	if namespace == "" {
 		namespace = "default"
 	}
@@ -58,8 +50,17 @@ func (d *DiagnosticianAgent) Execute(ctx *agent.AgentContext, task *agent.Task) 
 	now := time.Now()
 	task.StartedAt = &now
 
-	// Perform diagnosis
-	diagnosis, err := d.diagnose(ctx, podName, namespace, task.Description)
+	// Collect K8s data using registered tools before sending to LLM
+	logs := d.collectToolOutput("LogTool", map[string]any{
+		"podName":   podName,
+		"namespace": namespace,
+	})
+	events := d.collectToolOutput("EventTool", map[string]any{
+		"podName":   podName,
+		"namespace": namespace,
+	})
+
+	diagnosis, err := d.diagnose(ctx, podName, namespace, task.Description, logs, events)
 	if err != nil {
 		task.Status = agent.TaskStatusFailed
 		task.Error = err.Error()
@@ -68,37 +69,57 @@ func (d *DiagnosticianAgent) Execute(ctx *agent.AgentContext, task *agent.Task) 
 		return task, err
 	}
 
-	// Update task with results
 	task.Status = agent.TaskStatusCompleted
-	task.Output = map[string]interface{}{
-		"pod_name":         podName,
-		"namespace":        namespace,
-		"root_cause":       diagnosis["root_cause"],
-		"error_type":       diagnosis["error_type"],
-		"recommendations":  diagnosis["recommendations"],
-		"confidence":       diagnosis["confidence"],
-		"diagnosis_time":   time.Since(startTime).String(),
+	task.Output = map[string]any{
+		"pod_name":        podName,
+		"namespace":       namespace,
+		"root_cause":      diagnosis["root_cause"],
+		"error_type":      diagnosis["error_type"],
+		"recommendations": diagnosis["recommendations"],
+		"confidence":      diagnosis["confidence"],
+		"diagnosis_time":  time.Since(startTime).String(),
 	}
 
 	completedAt := time.Now()
 	task.CompletedAt = &completedAt
 
-	_ = logger // Suppress unused variable warning
-
 	return task, nil
 }
 
-// Analyze analyzes input and returns insights
-func (d *DiagnosticianAgent) Analyze(ctx *agent.AgentContext, input map[string]interface{}) (map[string]interface{}, error) {
+// Analyze implements SpecialistAgent; collects tool data then calls LLM
+func (d *DiagnosticianAgent) Analyze(ctx *agent.AgentContext, input map[string]any) (map[string]any, error) {
 	podName, _ := input["pod_name"].(string)
 	namespace, _ := input["namespace"].(string)
 	description, _ := input["description"].(string)
 
-	return d.diagnose(ctx, podName, namespace, description)
+	logs := d.collectToolOutput("LogTool", map[string]any{
+		"podName":   podName,
+		"namespace": namespace,
+	})
+	events := d.collectToolOutput("EventTool", map[string]any{
+		"podName":   podName,
+		"namespace": namespace,
+	})
+
+	return d.diagnose(ctx, podName, namespace, description, logs, events)
 }
 
-// diagnose performs the actual diagnosis logic
-func (d *DiagnosticianAgent) diagnose(ctx *agent.AgentContext, podName, namespace, description string) (map[string]interface{}, error) {
+// collectToolOutput calls a named tool and returns its output, or an error message string if unavailable
+func (d *DiagnosticianAgent) collectToolOutput(toolName string, params map[string]any) string {
+	for _, tool := range d.GetTools() {
+		if tool.Name() == toolName {
+			result, err := tool.Execute(params)
+			if err != nil {
+				return fmt.Sprintf("[%s error: %v]", toolName, err)
+			}
+			return result
+		}
+	}
+	return ""
+}
+
+// diagnose calls LLM with pod metadata and collected tool data to produce a structured diagnosis
+func (d *DiagnosticianAgent) diagnose(ctx *agent.AgentContext, podName, namespace, description, logs, events string) (map[string]any, error) {
 	systemPrompt := `You are a Kubernetes diagnostics expert. Analyze pod issues and provide detailed diagnosis.
 
 Your task is to:
@@ -122,18 +143,22 @@ Pod Name: %s
 Namespace: %s
 Issue Description: %s
 
-Provide a comprehensive diagnosis in JSON format.`, podName, namespace, description)
+Pod Logs:
+%s
+
+Pod Events:
+%s
+
+Provide a comprehensive diagnosis in JSON format.`, podName, namespace, description, logs, events)
 
 	response, err := d.CallLLM(ctx, systemPrompt, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("diagnosis failed: %w", err)
 	}
 
-	// Parse JSON response
-	var diagnosis map[string]interface{}
+	var diagnosis map[string]any
 	if err := json.Unmarshal([]byte(response), &diagnosis); err != nil {
-		// If JSON parsing fails, return a structured response anyway
-		return map[string]interface{}{
+		return map[string]any{
 			"root_cause":      response,
 			"error_type":      "Unknown",
 			"recommendations": []string{"Check pod logs and events for more details"},

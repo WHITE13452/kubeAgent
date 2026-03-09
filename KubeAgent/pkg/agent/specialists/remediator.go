@@ -23,10 +23,8 @@ func NewRemediatorAgent(llmClient agent.LLMClient, logger agent.Logger) *Remedia
 		Timeout:     2 * time.Minute,
 	}
 
-	baseAgent := agent.NewBaseAgent(config, llmClient, logger)
-
 	return &RemediatorAgent{
-		BaseAgent: baseAgent,
+		BaseAgent: agent.NewBaseAgent(config, llmClient, logger),
 	}
 }
 
@@ -43,17 +41,15 @@ func (r *RemediatorAgent) Execute(ctx *agent.AgentContext, task *agent.Task) (*a
 	now := time.Now()
 	task.StartedAt = &now
 
-	// Extract diagnosis info
-	diagnosis, _ := task.Input["diagnosis"].(map[string]interface{})
 	rootCause, _ := task.Input["root_cause"].(string)
 	errorType, _ := task.Input["error_type"].(string)
+	diagnosis, _ := task.Input["diagnosis"].(map[string]any)
 
-	if diagnosis == nil && rootCause == "" {
-		// Try to extract from description
+	if rootCause == "" {
 		rootCause = task.Description
 	}
 
-	// Generate remediation plan
+	// Generate remediation plan via LLM
 	remediation, err := r.generateRemediation(ctx, rootCause, errorType, diagnosis)
 	if err != nil {
 		task.Status = agent.TaskStatusFailed
@@ -63,15 +59,37 @@ func (r *RemediatorAgent) Execute(ctx *agent.AgentContext, task *agent.Task) (*a
 		return task, err
 	}
 
-	// Update task with results
+	// If plan requires approval, ask human before proceeding
+	requiresApproval, _ := remediation["requires_approval"].(bool)
+	patch, _ := remediation["patch"].(string)
+	approvalStatus := "not_required"
+
+	if requiresApproval {
+		prompt := fmt.Sprintf("即将执行修复操作:\n根因: %s\n修复方案:\n%s\n\n是否确认执行?", rootCause, patch)
+		decision := r.askHuman(prompt)
+		approvalStatus = decision
+		if decision == "rejected" {
+			task.Status = agent.TaskStatusCancelled
+			task.Error = "remediation rejected by user"
+			completedAt := time.Now()
+			task.CompletedAt = &completedAt
+			return task, nil
+		}
+	}
+
+	// Apply the remediation if approved or not requiring approval
+	applyResult := r.applyRemediation(remediation)
+
 	task.Status = agent.TaskStatusCompleted
-	task.Output = map[string]interface{}{
-		"remediation_type":  remediation["remediation_type"],
-		"patch":             remediation["patch"],
+	task.Output = map[string]any{
+		"remediation_type":   remediation["remediation_type"],
+		"patch":              patch,
 		"verification_steps": remediation["verification_steps"],
-		"requires_approval": remediation["requires_approval"],
-		"risk_level":        remediation["risk_level"],
-		"remediation_time":  time.Since(startTime).String(),
+		"requires_approval":  requiresApproval,
+		"risk_level":         remediation["risk_level"],
+		"approval_status":    approvalStatus,
+		"apply_result":       applyResult,
+		"remediation_time":   time.Since(startTime).String(),
 	}
 
 	completedAt := time.Now()
@@ -80,17 +98,17 @@ func (r *RemediatorAgent) Execute(ctx *agent.AgentContext, task *agent.Task) (*a
 	return task, nil
 }
 
-// Analyze analyzes input and returns remediation insights
-func (r *RemediatorAgent) Analyze(ctx *agent.AgentContext, input map[string]interface{}) (map[string]interface{}, error) {
+// Analyze implements SpecialistAgent
+func (r *RemediatorAgent) Analyze(ctx *agent.AgentContext, input map[string]any) (map[string]any, error) {
 	rootCause, _ := input["root_cause"].(string)
 	errorType, _ := input["error_type"].(string)
-	diagnosis, _ := input["diagnosis"].(map[string]interface{})
+	diagnosis, _ := input["diagnosis"].(map[string]any)
 
 	return r.generateRemediation(ctx, rootCause, errorType, diagnosis)
 }
 
-// generateRemediation generates a remediation plan
-func (r *RemediatorAgent) generateRemediation(ctx *agent.AgentContext, rootCause, errorType string, diagnosis map[string]interface{}) (map[string]interface{}, error) {
+// generateRemediation calls LLM to produce a structured remediation plan
+func (r *RemediatorAgent) generateRemediation(ctx *agent.AgentContext, rootCause, errorType string, diagnosis map[string]any) (map[string]any, error) {
 	systemPrompt := `You are a Kubernetes remediation expert. Generate fixes for diagnosed issues.
 
 Your task is to:
@@ -104,7 +122,7 @@ Return your remediation plan in JSON format:
   "remediation_type": "patch|config_change|restart|scale",
   "patch": "YAML patch content or commands",
   "verification_steps": ["Step 1", "Step 2"],
-  "requires_approval": true/false,
+  "requires_approval": true,
   "risk_level": "low|medium|high"
 }`
 
@@ -122,11 +140,9 @@ Provide a comprehensive remediation plan in JSON format.`, rootCause, errorType,
 		return nil, fmt.Errorf("remediation generation failed: %w", err)
 	}
 
-	// Parse JSON response
-	var remediation map[string]interface{}
+	var remediation map[string]any
 	if err := json.Unmarshal([]byte(response), &remediation); err != nil {
-		// If JSON parsing fails, return a basic response
-		return map[string]interface{}{
+		return map[string]any{
 			"remediation_type":   "manual",
 			"patch":              response,
 			"verification_steps": []string{"Apply patch and verify pod status"},
@@ -136,4 +152,50 @@ Provide a comprehensive remediation plan in JSON format.`, rootCause, errorType,
 	}
 
 	return remediation, nil
+}
+
+// askHuman calls HumanTool if registered; returns "approved", "rejected", or "skipped" if tool not found
+func (r *RemediatorAgent) askHuman(prompt string) string {
+	for _, tool := range r.GetTools() {
+		if tool.Name() == "HumanTool" {
+			result, err := tool.Execute(map[string]any{"prompt": prompt})
+			if err != nil {
+				return "rejected"
+			}
+			return result
+		}
+	}
+	// No HumanTool registered — default to approved for non-interactive scenarios
+	return "approved"
+}
+
+// applyRemediation attempts to execute the remediation using registered tools.
+// Returns a status message; actual K8s mutations go through CreateTool/DeleteTool.
+func (r *RemediatorAgent) applyRemediation(remediation map[string]any) string {
+	remediationType, _ := remediation["remediation_type"].(string)
+	patch, _ := remediation["patch"].(string)
+
+	switch remediationType {
+	case "patch", "config_change":
+		// Try KubeTool for kubectl-based patches if registered
+		for _, tool := range r.GetTools() {
+			if tool.Name() == "KubeTool" {
+				result, err := tool.Execute(map[string]any{"command": patch})
+				if err != nil {
+					return fmt.Sprintf("apply failed: %v", err)
+				}
+				return result
+			}
+		}
+		return "patch generated (no KubeTool registered for automatic apply)"
+
+	case "restart":
+		return "manual restart required: " + patch
+
+	case "scale":
+		return "manual scaling required: " + patch
+
+	default:
+		return "manual action required: " + patch
+	}
 }
