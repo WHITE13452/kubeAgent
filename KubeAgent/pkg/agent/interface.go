@@ -112,8 +112,11 @@ type LLMClient interface {
 
 // Message represents a message in LLM conversation
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`    // assistant message with tool calls
+	ToolCallID string     `json:"tool_call_id,omitempty"` // tool result message
+	IsError    bool       `json:"is_error,omitempty"`     // tool result error flag
 }
 
 // LLMResponse represents a response from LLM

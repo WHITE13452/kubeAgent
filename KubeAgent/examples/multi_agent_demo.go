@@ -21,7 +21,7 @@ func main() {
 	stateStore := agent.NewMemoryStateStore()
 
 	// Initialize LLM client
-	llmClient, err := agent.NewOpenAILLMClient(nil) // Uses default config from env
+	llmClient, err := agent.NewAnthropicLLMClient(nil) // Auto-detects ANTHROPIC_API_KEY or MINIMAX_API_KEY
 	if err != nil {
 		log.Fatalf("Failed to create LLM client: %v", err)
 	}

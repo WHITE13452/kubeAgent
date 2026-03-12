@@ -7,24 +7,21 @@ import (
 	prompttpl "kubeagent/cmd/promptTpl"
 	"kubeagent/cmd/utils"
 	"log"
-
-	"github.com/sashabaranov/go-openai"
 )
 
 type CreateTool struct {
-	Name string
+	Name        string
 	Description string
-	ArgsSchema string
+	ArgsSchema  string
 }
 
 type CreateToolParam struct {
-	Prompt string `json:"prompt"` // Prompt is the prompt to create a tool
-	Resource string `json:"resource"` 
+	Prompt   string `json:"prompt"`
+	Resource string `json:"resource"`
 }
 
-// unmarshall json response to this struct
 type CreateToolResponse struct {
-	Data string `json:"data"` 
+	Data string `json:"data"`
 }
 
 func NewCreateTool() *CreateTool {
@@ -36,15 +33,9 @@ func NewCreateTool() *CreateTool {
 }
 
 func (c *CreateTool) Run(prompt, resource string) string {
-	messages := make([]openai.ChatCompletionMessage, 2)
-
-	messages[0] = openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleSystem,
-		Content: prompttpl.SystemPrompt,
-	}
-	messages[1] = openai.ChatCompletionMessage{
-		Role:   openai.ChatMessageRoleUser,
-		Content: prompt,
+	messages := []ai.ChatCompletionMessage{
+		{Role: ai.RoleSystem, Content: prompttpl.SystemPrompt},
+		{Role: ai.RoleUser, Content: prompt},
 	}
 
 	resp := ai.NormalChat(messages)
@@ -58,7 +49,7 @@ func (c *CreateTool) Run(prompt, resource string) string {
 	}
 
 	url := "http://localhost:8080/" + resource
-	responseBody ,err := utils.PostHTTP(url, requestJsonBody)
+	responseBody, err := utils.PostHTTP(url, requestJsonBody)
 	if err != nil {
 		log.Println("Error making HTTP request:", err)
 		return "Error creating tool: " + err.Error()

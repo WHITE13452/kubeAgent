@@ -33,7 +33,7 @@ func (d *DiagnosticianAgent) CanHandle(taskType agent.TaskType) bool {
 	return taskType == agent.TaskTypeDiagnose || taskType == agent.TaskTypeQuery
 }
 
-// Execute executes a diagnostic task
+// Execute executes a diagnostic task using the agentic tool-use loop
 func (d *DiagnosticianAgent) Execute(ctx *agent.AgentContext, task *agent.Task) (*agent.Task, error) {
 	startTime := time.Now()
 
@@ -50,17 +50,7 @@ func (d *DiagnosticianAgent) Execute(ctx *agent.AgentContext, task *agent.Task) 
 	now := time.Now()
 	task.StartedAt = &now
 
-	// Collect K8s data using registered tools before sending to LLM
-	logs := d.collectToolOutput("LogTool", map[string]any{
-		"podName":   podName,
-		"namespace": namespace,
-	})
-	events := d.collectToolOutput("EventTool", map[string]any{
-		"podName":   podName,
-		"namespace": namespace,
-	})
-
-	diagnosis, err := d.diagnose(ctx, podName, namespace, task.Description, logs, events)
+	diagnosis, err := d.diagnose(ctx, podName, namespace, task.Description)
 	if err != nil {
 		task.Status = agent.TaskStatusFailed
 		task.Error = err.Error()
@@ -86,52 +76,25 @@ func (d *DiagnosticianAgent) Execute(ctx *agent.AgentContext, task *agent.Task) 
 	return task, nil
 }
 
-// Analyze implements SpecialistAgent; collects tool data then calls LLM
+// Analyze implements SpecialistAgent
 func (d *DiagnosticianAgent) Analyze(ctx *agent.AgentContext, input map[string]any) (map[string]any, error) {
 	podName, _ := input["pod_name"].(string)
 	namespace, _ := input["namespace"].(string)
 	description, _ := input["description"].(string)
 
-	logs := d.collectToolOutput("LogTool", map[string]any{
-		"podName":   podName,
-		"namespace": namespace,
-	})
-	events := d.collectToolOutput("EventTool", map[string]any{
-		"podName":   podName,
-		"namespace": namespace,
-	})
-
-	return d.diagnose(ctx, podName, namespace, description, logs, events)
+	return d.diagnose(ctx, podName, namespace, description)
 }
 
-// collectToolOutput calls a named tool and returns its output, or an error message string if unavailable
-func (d *DiagnosticianAgent) collectToolOutput(toolName string, params map[string]any) string {
-	for _, tool := range d.GetTools() {
-		if tool.Name() == toolName {
-			result, err := tool.Execute(params)
-			if err != nil {
-				return fmt.Sprintf("[%s error: %v]", toolName, err)
-			}
-			return result
-		}
-	}
-	return ""
-}
+// diagnose runs the agentic tool-use loop to collect data and produce a diagnosis
+func (d *DiagnosticianAgent) diagnose(ctx *agent.AgentContext, podName, namespace, description string) (map[string]any, error) {
+	systemPrompt := `You are a Kubernetes diagnostics expert. You have tools to inspect pods, logs, events, and cluster state.
 
-// diagnose calls LLM with pod metadata and collected tool data to produce a structured diagnosis
-func (d *DiagnosticianAgent) diagnose(ctx *agent.AgentContext, podName, namespace, description, logs, events string) (map[string]any, error) {
-	systemPrompt := `You are a Kubernetes diagnostics expert. Analyze pod issues and provide detailed diagnosis.
+Use the available tools to collect information about the issue, then provide a diagnosis.
 
-Your task is to:
-1. Identify the root cause of the issue
-2. Classify the error type (OOMKilled, CrashLoopBackOff, ImagePullBackOff, etc.)
-3. Provide specific recommendations for fixing the issue
-4. Estimate confidence level
-
-Return your analysis in JSON format:
+Return your final diagnosis in JSON format:
 {
   "root_cause": "Detailed explanation of the root cause",
-  "error_type": "Error classification",
+  "error_type": "Error classification (OOMKilled, CrashLoopBackOff, ImagePullBackOff, etc.)",
   "key_errors": ["Error 1", "Error 2"],
   "recommendations": ["Recommendation 1", "Recommendation 2"],
   "confidence": 0.95
@@ -143,21 +106,16 @@ Pod Name: %s
 Namespace: %s
 Issue Description: %s
 
-Pod Logs:
-%s
+Use the available tools to collect logs, events, and other relevant information, then provide a comprehensive diagnosis in JSON format.`, podName, namespace, description)
 
-Pod Events:
-%s
-
-Provide a comprehensive diagnosis in JSON format.`, podName, namespace, description, logs, events)
-
-	response, err := d.CallLLM(ctx, systemPrompt, userPrompt)
+	response, err := d.RunToolLoop(ctx, systemPrompt, userPrompt, 0)
 	if err != nil {
 		return nil, fmt.Errorf("diagnosis failed: %w", err)
 	}
 
 	var diagnosis map[string]any
 	if err := json.Unmarshal([]byte(response), &diagnosis); err != nil {
+		// LLM returned non-JSON text - wrap it as a diagnosis
 		return map[string]any{
 			"root_cause":      response,
 			"error_type":      "Unknown",

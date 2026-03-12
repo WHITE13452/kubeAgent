@@ -2,150 +2,222 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
-	"github.com/sashabaranov/go-openai"
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-// OpenAILLMClient implements LLMClient using OpenAI-compatible API
-type OpenAILLMClient struct {
-	client *openai.Client
+// AnthropicLLMClient implements LLMClient using Anthropic-compatible API
+// Supports both Anthropic (Claude) and MiniMax models via the same SDK
+type AnthropicLLMClient struct {
+	client anthropic.Client
 	config *LLMConfig
 }
 
-// NewOpenAILLMClient creates a new OpenAI LLM client
-func NewOpenAILLMClient(config *LLMConfig) (*OpenAILLMClient, error) {
+// NewAnthropicLLMClient creates a new Anthropic LLM client
+// If config is nil, auto-detects provider from environment variables:
+//   - ANTHROPIC_API_KEY → Anthropic (Claude)
+//   - MINIMAX_API_KEY   → MiniMax (via Anthropic-compatible API)
+func NewAnthropicLLMClient(config *LLMConfig) (*AnthropicLLMClient, error) {
 	if config == nil {
-		// Default configuration for Qwen
-		apiKey := os.Getenv("DASHSCOPE_API_KEY")
-		if apiKey == "" {
-			return nil, fmt.Errorf("DASHSCOPE_API_KEY environment variable not set")
-		}
-
-		config = &LLMConfig{
-			Provider:    "qwen",
-			Model:       "qwen-max",
-			APIKey:      apiKey,
-			BaseURL:     "https://dashscope.aliyuncs.com/compatible-mode/v1",
-			Temperature: 0.7,
-			MaxTokens:   2000,
+		config = detectLLMConfig()
+		if config == nil {
+			return nil, fmt.Errorf("no API key found: set ANTHROPIC_API_KEY or MINIMAX_API_KEY")
 		}
 	}
 
-	clientConfig := openai.DefaultConfig(config.APIKey)
+	opts := []option.RequestOption{
+		option.WithAPIKey(config.APIKey),
+	}
 	if config.BaseURL != "" {
-		clientConfig.BaseURL = config.BaseURL
+		opts = append(opts, option.WithBaseURL(config.BaseURL))
 	}
 
-	client := openai.NewClientWithConfig(clientConfig)
+	client := anthropic.NewClient(opts...)
 
-	return &OpenAILLMClient{
+	return &AnthropicLLMClient{
 		client: client,
 		config: config,
 	}, nil
 }
 
-// Complete sends a prompt and returns the completion
-func (c *OpenAILLMClient) Complete(ctx context.Context, messages []Message) (string, error) {
-	// Convert messages to OpenAI format
-	openaiMessages := make([]openai.ChatCompletionMessage, len(messages))
-	for i, msg := range messages {
-		openaiMessages[i] = openai.ChatCompletionMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
+// detectLLMConfig auto-detects LLM provider from environment variables
+func detectLLMConfig() *LLMConfig {
+	if apiKey := os.Getenv("ANTHROPIC_API_KEY"); apiKey != "" {
+		return &LLMConfig{
+			Provider:    "anthropic",
+			Model:       "claude-sonnet-4-20250514",
+			APIKey:      apiKey,
+			Temperature: 0.7,
+			MaxTokens:   2000,
 		}
 	}
 
-	resp, err := c.client.CreateChatCompletion(
-		ctx,
-		openai.ChatCompletionRequest{
-			Model:       c.config.Model,
-			Messages:    openaiMessages,
-			Temperature: c.config.Temperature,
-			MaxTokens:   c.config.MaxTokens,
-		},
-	)
+	if apiKey := os.Getenv("MINIMAX_API_KEY"); apiKey != "" {
+		return &LLMConfig{
+			Provider:    "minimax",
+			Model:       "MiniMax-M2.5",
+			APIKey:      apiKey,
+			BaseURL:     "https://api.minimaxi.com/anthropic",
+			Temperature: 0.7,
+			MaxTokens:   2000,
+		}
+	}
 
+	return nil
+}
+
+// Complete sends a prompt and returns the completion
+func (c *AnthropicLLMClient) Complete(ctx context.Context, messages []Message) (string, error) {
+	systemBlocks, anthropicMessages := c.convertMessages(messages)
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(c.config.Model),
+		MaxTokens: int64(c.config.MaxTokens),
+		Messages:  anthropicMessages,
+	}
+	if len(systemBlocks) > 0 {
+		params.System = systemBlocks
+	}
+	if c.config.Temperature > 0 {
+		params.Temperature = anthropic.Float(float64(c.config.Temperature))
+	}
+
+	resp, err := c.client.Messages.New(ctx, params)
 	if err != nil {
 		return "", fmt.Errorf("LLM API call failed: %w", err)
 	}
 
-	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("no response from LLM")
-	}
-
-	return resp.Choices[0].Message.Content, nil
+	return c.extractTextContent(resp), nil
 }
 
 // CompleteWithTools sends a prompt with available tools
-func (c *OpenAILLMClient) CompleteWithTools(ctx context.Context, messages []Message, tools []Tool) (*LLMResponse, error) {
-	// Convert messages to OpenAI format
-	openaiMessages := make([]openai.ChatCompletionMessage, len(messages))
-	for i, msg := range messages {
-		openaiMessages[i] = openai.ChatCompletionMessage{
-			Role:    msg.Role,
-			Content: msg.Content,
-		}
+func (c *AnthropicLLMClient) CompleteWithTools(ctx context.Context, messages []Message, tools []Tool) (*LLMResponse, error) {
+	systemBlocks, anthropicMessages := c.convertMessages(messages)
+	anthropicTools := c.convertTools(tools)
+
+	params := anthropic.MessageNewParams{
+		Model:     anthropic.Model(c.config.Model),
+		MaxTokens: int64(c.config.MaxTokens),
+		Messages:  anthropicMessages,
+		Tools:     anthropicTools,
+	}
+	if len(systemBlocks) > 0 {
+		params.System = systemBlocks
+	}
+	if c.config.Temperature > 0 {
+		params.Temperature = anthropic.Float(float64(c.config.Temperature))
 	}
 
-	// Convert tools to OpenAI format
-	openaiTools := make([]openai.Tool, len(tools))
-	for i, tool := range tools {
-		openaiTools[i] = openai.Tool{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
-				Name:        tool.Name(),
-				Description: tool.Description(),
-				Parameters:  tool.ArgsSchema(),
-			},
-		}
-	}
-
-	resp, err := c.client.CreateChatCompletion(
-		ctx,
-		openai.ChatCompletionRequest{
-			Model:       c.config.Model,
-			Messages:    openaiMessages,
-			Tools:       openaiTools,
-			Temperature: c.config.Temperature,
-			MaxTokens:   c.config.MaxTokens,
-		},
-	)
-
+	resp, err := c.client.Messages.New(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("LLM API call failed: %w", err)
 	}
 
-	if len(resp.Choices) == 0 {
-		return nil, fmt.Errorf("no response from LLM")
-	}
-
-	choice := resp.Choices[0]
 	llmResponse := &LLMResponse{
-		Content:      choice.Message.Content,
-		FinishReason: string(choice.FinishReason),
+		Content:      c.extractTextContent(resp),
+		FinishReason: string(resp.StopReason),
 	}
 
-	// Convert tool calls if present
-	if len(choice.Message.ToolCalls) > 0 {
-		llmResponse.ToolCalls = make([]ToolCall, len(choice.Message.ToolCalls))
-		for i, tc := range choice.Message.ToolCalls {
-			llmResponse.ToolCalls[i] = ToolCall{
-				ID:   tc.ID,
-				Name: tc.Function.Name,
-				// Arguments would need to be parsed from JSON string
-				// Arguments: parseArgs(tc.Function.Arguments),
-			}
+	// Extract tool calls from response
+	for _, block := range resp.Content {
+		if toolUse, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
+			var args map[string]interface{}
+			json.Unmarshal(toolUse.Input, &args)
+			llmResponse.ToolCalls = append(llmResponse.ToolCalls, ToolCall{
+				ID:        toolUse.ID,
+				Name:      toolUse.Name,
+				Arguments: args,
+			})
 		}
 	}
 
 	return llmResponse, nil
 }
 
+// convertMessages separates system messages and converts to Anthropic format
+// Handles plain text messages, assistant messages with tool calls, and tool result messages
+func (c *AnthropicLLMClient) convertMessages(messages []Message) ([]anthropic.TextBlockParam, []anthropic.MessageParam) {
+	var systemBlocks []anthropic.TextBlockParam
+	var anthropicMessages []anthropic.MessageParam
+
+	for i := 0; i < len(messages); i++ {
+		msg := messages[i]
+		switch msg.Role {
+		case "system":
+			systemBlocks = append(systemBlocks, anthropic.TextBlockParam{Text: msg.Content})
+		case "user":
+			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)))
+		case "assistant":
+			if len(msg.ToolCalls) > 0 {
+				// Assistant message with tool use blocks
+				var blocks []anthropic.ContentBlockParamUnion
+				if msg.Content != "" {
+					blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+				}
+				for _, tc := range msg.ToolCalls {
+					blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, tc.Arguments, tc.Name))
+				}
+				anthropicMessages = append(anthropicMessages, anthropic.NewAssistantMessage(blocks...))
+			} else {
+				anthropicMessages = append(anthropicMessages, anthropic.NewAssistantMessage(anthropic.NewTextBlock(msg.Content)))
+			}
+		case "tool":
+			// Batch consecutive tool result messages into a single user message
+			var toolResults []anthropic.ContentBlockParamUnion
+			for i < len(messages) && messages[i].Role == "tool" {
+				toolResults = append(toolResults, anthropic.NewToolResultBlock(
+					messages[i].ToolCallID,
+					messages[i].Content,
+					messages[i].IsError,
+				))
+				i++
+			}
+			i-- // compensate for outer loop increment
+			anthropicMessages = append(anthropicMessages, anthropic.NewUserMessage(toolResults...))
+		}
+	}
+
+	return systemBlocks, anthropicMessages
+}
+
+// convertTools converts Tool interface to Anthropic tool format
+func (c *AnthropicLLMClient) convertTools(tools []Tool) []anthropic.ToolUnionParam {
+	result := make([]anthropic.ToolUnionParam, len(tools))
+	for i, tool := range tools {
+		var schema map[string]interface{}
+		json.Unmarshal([]byte(tool.ArgsSchema()), &schema)
+		properties, _ := schema["properties"]
+
+		toolParam := anthropic.ToolParam{
+			Name:        tool.Name(),
+			Description: anthropic.String(tool.Description()),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: properties,
+			},
+		}
+		result[i] = anthropic.ToolUnionParam{OfTool: &toolParam}
+	}
+	return result
+}
+
+// extractTextContent extracts text from Anthropic response content blocks
+func (c *AnthropicLLMClient) extractTextContent(resp *anthropic.Message) string {
+	var result string
+	for _, block := range resp.Content {
+		if textBlock, ok := block.AsAny().(anthropic.TextBlock); ok {
+			result += textBlock.Text
+		}
+	}
+	return result
+}
+
 // MockLLMClient is a mock implementation for testing
 type MockLLMClient struct {
-	CompleteFunc         func(ctx context.Context, messages []Message) (string, error)
+	CompleteFunc          func(ctx context.Context, messages []Message) (string, error)
 	CompleteWithToolsFunc func(ctx context.Context, messages []Message, tools []Tool) (*LLMResponse, error)
 }
 

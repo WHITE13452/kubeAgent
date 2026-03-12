@@ -33,7 +33,7 @@ func (r *RemediatorAgent) CanHandle(taskType agent.TaskType) bool {
 	return taskType == agent.TaskTypeRemediate
 }
 
-// Execute executes a remediation task
+// Execute executes a remediation task using the agentic tool-use loop
 func (r *RemediatorAgent) Execute(ctx *agent.AgentContext, task *agent.Task) (*agent.Task, error) {
 	startTime := time.Now()
 
@@ -49,8 +49,7 @@ func (r *RemediatorAgent) Execute(ctx *agent.AgentContext, task *agent.Task) (*a
 		rootCause = task.Description
 	}
 
-	// Generate remediation plan via LLM
-	remediation, err := r.generateRemediation(ctx, rootCause, errorType, diagnosis)
+	result, err := r.remediate(ctx, rootCause, errorType, diagnosis)
 	if err != nil {
 		task.Status = agent.TaskStatusFailed
 		task.Error = err.Error()
@@ -59,38 +58,9 @@ func (r *RemediatorAgent) Execute(ctx *agent.AgentContext, task *agent.Task) (*a
 		return task, err
 	}
 
-	// If plan requires approval, ask human before proceeding
-	requiresApproval, _ := remediation["requires_approval"].(bool)
-	patch, _ := remediation["patch"].(string)
-	approvalStatus := "not_required"
-
-	if requiresApproval {
-		prompt := fmt.Sprintf("即将执行修复操作:\n根因: %s\n修复方案:\n%s\n\n是否确认执行?", rootCause, patch)
-		decision := r.askHuman(prompt)
-		approvalStatus = decision
-		if decision == "rejected" {
-			task.Status = agent.TaskStatusCancelled
-			task.Error = "remediation rejected by user"
-			completedAt := time.Now()
-			task.CompletedAt = &completedAt
-			return task, nil
-		}
-	}
-
-	// Apply the remediation if approved or not requiring approval
-	applyResult := r.applyRemediation(remediation)
-
 	task.Status = agent.TaskStatusCompleted
-	task.Output = map[string]any{
-		"remediation_type":   remediation["remediation_type"],
-		"patch":              patch,
-		"verification_steps": remediation["verification_steps"],
-		"requires_approval":  requiresApproval,
-		"risk_level":         remediation["risk_level"],
-		"approval_status":    approvalStatus,
-		"apply_result":       applyResult,
-		"remediation_time":   time.Since(startTime).String(),
-	}
+	task.Output = result
+	task.Output["remediation_time"] = time.Since(startTime).String()
 
 	completedAt := time.Now()
 	task.CompletedAt = &completedAt
@@ -104,98 +74,52 @@ func (r *RemediatorAgent) Analyze(ctx *agent.AgentContext, input map[string]any)
 	errorType, _ := input["error_type"].(string)
 	diagnosis, _ := input["diagnosis"].(map[string]any)
 
-	return r.generateRemediation(ctx, rootCause, errorType, diagnosis)
+	return r.remediate(ctx, rootCause, errorType, diagnosis)
 }
 
-// generateRemediation calls LLM to produce a structured remediation plan
-func (r *RemediatorAgent) generateRemediation(ctx *agent.AgentContext, rootCause, errorType string, diagnosis map[string]any) (map[string]any, error) {
-	systemPrompt := `You are a Kubernetes remediation expert. Generate fixes for diagnosed issues.
+// remediate runs the agentic tool-use loop to generate and apply fixes
+func (r *RemediatorAgent) remediate(ctx *agent.AgentContext, rootCause, errorType string, diagnosis map[string]any) (map[string]any, error) {
+	systemPrompt := `You are a Kubernetes remediation expert. You have tools to create/delete resources, execute kubectl commands, and ask for human approval.
 
-Your task is to:
-1. Generate appropriate remediation actions (patch, configuration change, etc.)
-2. Provide verification steps
-3. Assess risk level
-4. Determine if human approval is required
+Your workflow:
+1. Analyze the diagnosis and generate a remediation plan
+2. For dangerous operations (delete, modify production resources), use the HumanTool to ask for confirmation before proceeding
+3. Apply the fix using available tools (CreateTool, DeleteTool, KubeTool)
+4. Report what actions were taken
 
-Return your remediation plan in JSON format:
+Return your final result in JSON format:
 {
   "remediation_type": "patch|config_change|restart|scale",
-  "patch": "YAML patch content or commands",
+  "actions_taken": ["action1", "action2"],
   "verification_steps": ["Step 1", "Step 2"],
-  "requires_approval": true,
   "risk_level": "low|medium|high"
 }`
 
 	diagnosisJSON, _ := json.Marshal(diagnosis)
-	userPrompt := fmt.Sprintf(`Generate a remediation plan for the following issue:
+	userPrompt := fmt.Sprintf(`Remediate the following Kubernetes issue:
 
 Root Cause: %s
 Error Type: %s
 Diagnosis Details: %s
 
-Provide a comprehensive remediation plan in JSON format.`, rootCause, errorType, string(diagnosisJSON))
+Use the available tools to fix the issue. Ask for human confirmation before applying dangerous changes.
+Return a summary in JSON format when done.`, rootCause, errorType, string(diagnosisJSON))
 
-	response, err := r.CallLLM(ctx, systemPrompt, userPrompt)
+	response, err := r.RunToolLoop(ctx, systemPrompt, userPrompt, 0)
 	if err != nil {
-		return nil, fmt.Errorf("remediation generation failed: %w", err)
+		return nil, fmt.Errorf("remediation failed: %w", err)
 	}
 
-	var remediation map[string]any
-	if err := json.Unmarshal([]byte(response), &remediation); err != nil {
+	var result map[string]any
+	if err := json.Unmarshal([]byte(response), &result); err != nil {
+		// LLM returned non-JSON text - wrap it
 		return map[string]any{
 			"remediation_type":   "manual",
-			"patch":              response,
-			"verification_steps": []string{"Apply patch and verify pod status"},
-			"requires_approval":  true,
+			"actions_taken":     []string{response},
+			"verification_steps": []string{"Verify the fix manually"},
 			"risk_level":         "medium",
 		}, nil
 	}
 
-	return remediation, nil
-}
-
-// askHuman calls HumanTool if registered; returns "approved", "rejected", or "skipped" if tool not found
-func (r *RemediatorAgent) askHuman(prompt string) string {
-	for _, tool := range r.GetTools() {
-		if tool.Name() == "HumanTool" {
-			result, err := tool.Execute(map[string]any{"prompt": prompt})
-			if err != nil {
-				return "rejected"
-			}
-			return result
-		}
-	}
-	// No HumanTool registered — default to approved for non-interactive scenarios
-	return "approved"
-}
-
-// applyRemediation attempts to execute the remediation using registered tools.
-// Returns a status message; actual K8s mutations go through CreateTool/DeleteTool.
-func (r *RemediatorAgent) applyRemediation(remediation map[string]any) string {
-	remediationType, _ := remediation["remediation_type"].(string)
-	patch, _ := remediation["patch"].(string)
-
-	switch remediationType {
-	case "patch", "config_change":
-		// Try KubeTool for kubectl-based patches if registered
-		for _, tool := range r.GetTools() {
-			if tool.Name() == "KubeTool" {
-				result, err := tool.Execute(map[string]any{"command": patch})
-				if err != nil {
-					return fmt.Sprintf("apply failed: %v", err)
-				}
-				return result
-			}
-		}
-		return "patch generated (no KubeTool registered for automatic apply)"
-
-	case "restart":
-		return "manual restart required: " + patch
-
-	case "scale":
-		return "manual scaling required: " + patch
-
-	default:
-		return "manual action required: " + patch
-	}
+	return result, nil
 }

@@ -22,7 +22,7 @@ var analyzeCmd = &cobra.Command{
 		logger := agent.NewSimpleLogger("KubeAgent")
 		stateStore := agent.NewMemoryStateStore()
 
-		llmClient, err := agent.NewOpenAILLMClient(nil)
+		llmClient, err := agent.NewAnthropicLLMClient(nil)
 		if err != nil {
 			fmt.Printf("Failed to initialize LLM client: %v\n", err)
 			return

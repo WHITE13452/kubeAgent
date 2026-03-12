@@ -125,7 +125,7 @@ func (b *BaseAgent) CallLLM(ctx *AgentContext, systemPrompt, userPrompt string) 
 	return response, nil
 }
 
-// CallLLMWithTools is a helper method for agents to call LLM with tools
+// CallLLMWithTools is a helper method for agents to call LLM with tools (single call, no loop)
 func (b *BaseAgent) CallLLMWithTools(ctx *AgentContext, systemPrompt, userPrompt string) (*LLMResponse, error) {
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},
@@ -142,4 +142,89 @@ func (b *BaseAgent) CallLLMWithTools(ctx *AgentContext, systemPrompt, userPrompt
 	}
 
 	return response, nil
+}
+
+// DefaultMaxToolIterations is the default max iterations for the tool loop
+const DefaultMaxToolIterations = 10
+
+// RunToolLoop runs an agentic tool-use loop:
+// 1. Sends the prompt + tool definitions to the LLM
+// 2. If the LLM returns tool calls, executes them and feeds results back
+// 3. Repeats until the LLM returns a final text response (no more tool calls)
+func (b *BaseAgent) RunToolLoop(ctx *AgentContext, systemPrompt, userPrompt string, maxIterations int) (string, error) {
+	if maxIterations <= 0 {
+		maxIterations = DefaultMaxToolIterations
+	}
+
+	// No tools registered - fall back to simple completion
+	if len(b.tools) == 0 {
+		return b.CallLLM(ctx, systemPrompt, userPrompt)
+	}
+
+	messages := []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
+
+	for i := 0; i < maxIterations; i++ {
+		resp, err := b.llmClient.CompleteWithTools(ctx.Context(), messages, b.tools)
+		if err != nil {
+			return "", fmt.Errorf("LLM call failed: %w", err)
+		}
+
+		// No tool calls - return the final text response
+		if len(resp.ToolCalls) == 0 {
+			return resp.Content, nil
+		}
+
+		// Add assistant message with tool calls to conversation history
+		messages = append(messages, Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+
+		// Execute each tool and add results to conversation
+		for _, tc := range resp.ToolCalls {
+			b.logger.Info("Executing tool", map[string]interface{}{
+				"agent_type": b.config.Type,
+				"tool_name":  tc.Name,
+				"tool_id":    tc.ID,
+			})
+
+			result, toolErr := b.executeTool(tc.Name, tc.Arguments)
+			toolMsg := Message{
+				Role:       "tool",
+				Content:    result,
+				ToolCallID: tc.ID,
+			}
+			if toolErr != nil {
+				toolMsg.Content = fmt.Sprintf("Error: %v", toolErr)
+				toolMsg.IsError = true
+				b.logger.Warn("Tool execution failed", map[string]interface{}{
+					"tool_name": tc.Name,
+					"error":     toolErr.Error(),
+				})
+			}
+			messages = append(messages, toolMsg)
+		}
+
+		b.logger.Info("Tool loop iteration completed", map[string]interface{}{
+			"agent_type": b.config.Type,
+			"iteration":  i + 1,
+			"tool_calls": len(resp.ToolCalls),
+		})
+	}
+
+	return "", fmt.Errorf("tool loop: max iterations (%d) reached", maxIterations)
+}
+
+// executeTool finds and executes a tool by name
+func (b *BaseAgent) executeTool(name string, args map[string]interface{}) (string, error) {
+	for _, tool := range b.tools {
+		if tool.Name() == name {
+			return tool.Execute(args)
+		}
+	}
+	return "", fmt.Errorf("tool %s not found", name)
 }

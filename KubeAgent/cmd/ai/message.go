@@ -3,13 +3,17 @@ package ai
 import (
 	"context"
 	"log"
-	"os"
 
-	"github.com/sashabaranov/go-openai"
+	"kubeagent/pkg/agent"
 )
 
+type ChatCompletionMessage struct {
+	Role    string
+	Content string
+}
+
 type ChatMessage struct {
-	Msg openai.ChatCompletionMessage
+	Msg ChatCompletionMessage
 }
 
 type ChatMessages []*ChatMessage
@@ -17,11 +21,6 @@ type ChatMessages []*ChatMessage
 var MessageStore ChatMessages
 
 const (
-	// Environment variable for the DashScope API key
-	ENV_DASHSCOPE_API_KEY = "DASHSCOPE_API_KEY"
-	QwenBaseURL           = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-
-	// Roles for chat messages
 	RoleSystem    = "system"
 	RoleUser      = "user"
 	RoleAssistant = "assistant"
@@ -38,10 +37,9 @@ func (cm *ChatMessages) Clear() {
 	cm.AddForSystem("You are a helpful k8s assistant!")
 }
 
-// AddFor adds a new message to the chat messages with the specified role
 func (cm *ChatMessages) AddFor(role string, msg string) {
 	*cm = append(*cm, &ChatMessage{
-		Msg: openai.ChatCompletionMessage{
+		Msg: ChatCompletionMessage{
 			Role:    role,
 			Content: msg,
 		},
@@ -60,33 +58,8 @@ func (cm *ChatMessages) AddForAssistant(msg string) {
 	cm.AddFor(RoleAssistant, msg)
 }
 
-func (cm *ChatMessages) AddForToolCall(role string, resp openai.ChatCompletionMessage) {
-	*cm = append(*cm, &ChatMessage{
-		Msg: openai.ChatCompletionMessage{
-			Role:         role,
-			Content:      resp.Content,
-			ToolCalls:    resp.ToolCalls,
-			FunctionCall: resp.FunctionCall,
-		},
-	})
-}
-
-func (cm *ChatMessages) AddForTool(msg, name, toolCallsID string) {
-	*cm = append(*cm, &ChatMessage{
-		Msg: openai.ChatCompletionMessage{
-			Role:       RoleTool,
-			Content:    msg,
-			Name:       name,
-			ToolCallID: toolCallsID,
-		},
-	})
-}
-
-// ToMessage converts the ChatMessages to a slice of openai.ChatCompletionMessage
-// This is useful for passing the messages to the OpenAI API
-// It returns a copy of the messages to avoid modifying the original slice
-func (cm *ChatMessages) ToMessage() []openai.ChatCompletionMessage {
-	ret := make([]openai.ChatCompletionMessage, len(*cm))
+func (cm *ChatMessages) ToMessage() []ChatCompletionMessage {
+	ret := make([]ChatCompletionMessage, len(*cm))
 	for index, c := range *cm {
 		ret[index] = c.Msg
 	}
@@ -100,28 +73,26 @@ func (cm *ChatMessages) GetLast() string {
 	return (*cm)[len(*cm)-1].Msg.Content
 }
 
-
-func NewOpenAIClient() *openai.Client {
-	token := os.Getenv(ENV_DASHSCOPE_API_KEY)
-	baseUrl := QwenBaseURL
-
-	config := openai.DefaultConfig(token)
-	config.BaseURL = baseUrl
-	return openai.NewClientWithConfig(config)
-}
-
-func NormalChat(message []openai.ChatCompletionMessage) openai.ChatCompletionMessage {
-	client := NewOpenAIClient()
-	resp, err := client.CreateChatCompletion(
-		context.TODO(),
-		openai.ChatCompletionRequest{
-			Model:    "qwen-max",
-			Messages: message,
-		},
-	)
-	if err != nil {
-		log.Println(err)
-		return openai.ChatCompletionMessage{}
+func NormalChat(messages []ChatCompletionMessage) ChatCompletionMessage {
+	agentMessages := make([]agent.Message, len(messages))
+	for i, m := range messages {
+		agentMessages[i] = agent.Message{Role: m.Role, Content: m.Content}
 	}
-	return resp.Choices[0].Message
+
+	client, err := agent.NewAnthropicLLMClient(nil)
+	if err != nil {
+		log.Println("Failed to create LLM client:", err)
+		return ChatCompletionMessage{}
+	}
+
+	resp, err := client.Complete(context.TODO(), agentMessages)
+	if err != nil {
+		log.Println("LLM call failed:", err)
+		return ChatCompletionMessage{}
+	}
+
+	return ChatCompletionMessage{
+		Role:    RoleAssistant,
+		Content: resp,
+	}
 }
