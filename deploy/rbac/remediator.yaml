@@ -1,0 +1,67 @@
+# Remediator Agent - Write access with approval requirement
+# Used for: HumanTool, CreateTool, DeleteTool
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubeagent-remediator
+  namespace: kubeagent-system
+  labels:
+    app: kubeagent
+    component: remediator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubeagent-remediator
+  namespace: kubeagent-system
+  labels:
+    app: kubeagent
+    component: remediator
+rules:
+  # Read all (needed for operations)
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "namespaces", 
+                "events", "endpoints", "persistentvolumeclaims", "replicationcontrollers"]
+    verbs: ["get", "list", "watch"]
+  # Write pods (deletion only, creation via deployments)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  # Write services and configmaps
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "secrets"]
+    verbs: ["create", "update", "patch", "delete"]
+  # Write workload resources
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Write batch resources
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Write networking
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read nodes and PVs
+  - apiGroups: [""]
+    resources: ["nodes", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubeagent-remediator
+  namespace: kubeagent-system
+  labels:
+    app: kubeagent
+    component: remediator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubeagent-remediator
+subjects:
+  - kind: ServiceAccount
+    name: kubeagent-remediator
+    namespace: kubeagent-system
