@@ -46,6 +46,7 @@ func main() {
 	remediator.AddTool(pkgtools.NewHumanTool())
 	remediator.AddTool(pkgtools.NewCreateTool(k8sClient))
 	remediator.AddTool(pkgtools.NewDeleteTool(k8sClient))
+	remediator.AddTool(pkgtools.NewKubeTool()) // Add KubeTool for kubectl commands
 
 	if err := coordinator.RegisterAgent(diagnostician); err != nil {
 		log.Fatalf("Failed to register diagnostician: %v", err)

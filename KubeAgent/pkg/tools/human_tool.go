@@ -32,6 +32,12 @@ func (h *HumanTool) Execute(params map[string]any) (string, error) {
 		return "", fmt.Errorf("prompt is required")
 	}
 
+	// Check for auto-approve mode (useful for testing)
+	if os.Getenv("AUTO_APPROVE") == "true" {
+		fmt.Printf("\n[HumanTool] Auto-approved (AUTO_APPROVE=true): %s\n", prompt)
+		return "auto-approved", nil
+	}
+
 	fmt.Printf("\n[Human Approval Required] %s\n请输入 yes/y 确认，其他内容取消: ", prompt)
 
 	reader := bufio.NewReader(os.Stdin)
