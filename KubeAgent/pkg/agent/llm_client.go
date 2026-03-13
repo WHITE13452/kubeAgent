@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -99,6 +100,32 @@ func (c *AnthropicLLMClient) CompleteWithTools(ctx context.Context, messages []M
 	systemBlocks, anthropicMessages := c.convertMessages(messages)
 	anthropicTools := c.convertTools(tools)
 
+	// Log LLM request details
+	requestJSON, _ := json.Marshal(map[string]interface{}{
+		"model":       c.config.Model,
+		"provider":    c.config.Provider,
+		"temperature": c.config.Temperature,
+		"max_tokens":  c.config.MaxTokens,
+		"message_count": len(messages),
+		"tool_count":  len(tools),
+	})
+	log.Printf("[LLM] >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>")
+	log.Printf("[LLM] REQUEST: %s", requestJSON)
+	
+	// Log first few messages for debugging
+	for i, msg := range messages {
+		if i < 3 {
+			content := msg.Content
+			if len(content) > 500 {
+				content = content[:500] + "..."
+			}
+			log.Printf("[LLM] Message[%d] Role=%s: %s", i, msg.Role, content)
+		}
+	}
+	if len(messages) > 3 {
+		log.Printf("[LLM] ... and %d more messages", len(messages)-3)
+	}
+
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(c.config.Model),
 		MaxTokens: int64(c.config.MaxTokens),
@@ -114,6 +141,8 @@ func (c *AnthropicLLMClient) CompleteWithTools(ctx context.Context, messages []M
 
 	resp, err := c.client.Messages.New(ctx, params)
 	if err != nil {
+		log.Printf("[LLM] ERROR: %v", err)
+		log.Printf("[LLM] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
 		return nil, fmt.Errorf("LLM API call failed: %w", err)
 	}
 
@@ -121,6 +150,23 @@ func (c *AnthropicLLMClient) CompleteWithTools(ctx context.Context, messages []M
 		Content:      c.extractTextContent(resp),
 		FinishReason: string(resp.StopReason),
 	}
+
+	// Log LLM response details
+	log.Printf("[LLM] RESPONSE: FinishReason=%s, ContentLength=%d", resp.StopReason, len(llmResponse.Content))
+	
+	// Log tool calls
+	for _, tc := range llmResponse.ToolCalls {
+		argsJSON, _ := json.Marshal(tc.Arguments)
+		log.Printf("[LLM] TOOL_CALL: Name=%s, ID=%s, Arguments=%s", tc.Name, tc.ID, argsJSON)
+	}
+	
+	// Log response content preview
+	content := llmResponse.Content
+	if len(content) > 500 {
+		content = content[:500] + "..."
+	}
+	log.Printf("[LLM] Response Content: %s", content)
+	log.Printf("[LLM] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<")
 
 	// Extract tool calls from response
 	for _, block := range resp.Content {
