@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -161,19 +163,43 @@ func (b *BaseAgent) RunToolLoop(ctx *AgentContext, systemPrompt, userPrompt stri
 		return b.CallLLM(ctx, systemPrompt, userPrompt)
 	}
 
+	// Log the initial prompts
+	log.Printf("[AGENT:%s] >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>", b.config.Name)
+	log.Printf("[AGENT:%s] System Prompt (%d chars): %.200s...", b.config.Name, len(systemPrompt), systemPrompt)
+	log.Printf("[AGENT:%s] User Prompt (%d chars): %.200s...", b.config.Name, len(userPrompt), userPrompt)
+	log.Printf("[AGENT:%s] Available Tools: %v", b.config.Name, func() []string {
+		names := make([]string, len(b.tools))
+		for i, t := range b.tools {
+			names[i] = t.Name()
+		}
+		return names
+	}())
+	log.Printf("[AGENT:%s] ==================================================", b.config.Name)
+
 	messages := []Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
 
 	for i := 0; i < maxIterations; i++ {
+		log.Printf("[AGENT:%s] ---- Tool Loop Iteration %d ----", b.config.Name, i+1)
+		
 		resp, err := b.llmClient.CompleteWithTools(ctx.Context(), messages, b.tools)
 		if err != nil {
+			log.Printf("[AGENT:%s] LLM Error: %v", b.config.Name, err)
+			log.Printf("[AGENT:%s] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<", b.config.Name)
 			return "", fmt.Errorf("LLM call failed: %w", err)
 		}
 
 		// No tool calls - return the final text response
 		if len(resp.ToolCalls) == 0 {
+			log.Printf("[AGENT:%s] No more tool calls, final response:", b.config.Name)
+			content := resp.Content
+			if len(content) > 1000 {
+				content = content[:1000] + "..."
+			}
+			log.Printf("[AGENT:%s] Final Response: %s", b.config.Name, content)
+			log.Printf("[AGENT:%s] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<", b.config.Name)
 			return resp.Content, nil
 		}
 
@@ -186,13 +212,13 @@ func (b *BaseAgent) RunToolLoop(ctx *AgentContext, systemPrompt, userPrompt stri
 
 		// Execute each tool and add results to conversation
 		for _, tc := range resp.ToolCalls {
-			b.logger.Info("Executing tool", map[string]interface{}{
-				"agent_type": b.config.Type,
-				"tool_name":  tc.Name,
-				"tool_id":    tc.ID,
-			})
-
+			argsJSON, _ := json.Marshal(tc.Arguments)
+			log.Printf("[TOOL:%s] >>> Executing Tool >>>", tc.Name)
+			log.Printf("[TOOL:%s] ToolCall ID: %s", tc.Name, tc.ID)
+			log.Printf("[TOOL:%s] Arguments: %s", tc.Name, argsJSON)
+			
 			result, toolErr := b.executeTool(tc.Name, tc.Arguments)
+			
 			toolMsg := Message{
 				Role:       "tool",
 				Content:    result,
@@ -201,11 +227,17 @@ func (b *BaseAgent) RunToolLoop(ctx *AgentContext, systemPrompt, userPrompt stri
 			if toolErr != nil {
 				toolMsg.Content = fmt.Sprintf("Error: %v", toolErr)
 				toolMsg.IsError = true
-				b.logger.Warn("Tool execution failed", map[string]interface{}{
-					"tool_name": tc.Name,
-					"error":     toolErr.Error(),
-				})
+				log.Printf("[TOOL:%s] ERROR: %v", tc.Name, toolErr)
+			} else {
+				// Log result preview
+				resultPreview := result
+				if len(resultPreview) > 500 {
+					resultPreview = resultPreview[:500] + "..."
+				}
+				log.Printf("[TOOL:%s] Result (%d chars): %s", tc.Name, len(result), resultPreview)
 			}
+			log.Printf("[TOOL:%s] <<< Tool Complete <<<", tc.Name)
+			
 			messages = append(messages, toolMsg)
 		}
 
@@ -216,6 +248,8 @@ func (b *BaseAgent) RunToolLoop(ctx *AgentContext, systemPrompt, userPrompt stri
 		})
 	}
 
+	log.Printf("[AGENT:%s] Max iterations reached", b.config.Name)
+	log.Printf("[AGENT:%s] <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<", b.config.Name)
 	return "", fmt.Errorf("tool loop: max iterations (%d) reached", maxIterations)
 }
 

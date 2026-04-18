@@ -1,0 +1,51 @@
+# Coordinator Agent - Main orchestration service account
+# Responsible for coordinating all agents and managing task execution
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubeagent-coordinator
+  namespace: kubeagent-system
+  labels:
+    app: kubeagent
+    component: coordinator
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubeagent-coordinator
+  namespace: kubeagent-system
+  labels:
+    app: kubeagent
+    component: coordinator
+rules:
+  # Read all resources for coordination
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "configmaps", "namespaces", 
+                "events", "endpoints", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  # Manage configmaps for state
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "update", "patch", "delete"]
+  # Read workload resources
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubeagent-coordinator
+  namespace: kubeagent-system
+  labels:
+    app: kubeagent
+    component: coordinator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubeagent-coordinator
+subjects:
+  - kind: ServiceAccount
+    name: kubeagent-coordinator
+    namespace: kubeagent-system

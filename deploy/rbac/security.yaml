@@ -1,0 +1,56 @@
+# Security Agent - RBAC audit and security scanning permissions
+# Used for: RBAC analysis, security audits
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubeagent-security
+  namespace: kubeagent-system
+  labels:
+    app: kubeagent
+    component: security
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubeagent-security
+  labels:
+    app: kubeagent
+    component: security
+rules:
+  # Read all resources for security scanning
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  # RBAC read (for audit)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+    verbs: ["get", "list", "watch"]
+  # Auth review
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+  # Security related
+  - apiGroups: ["policy"]
+    resources: ["podsecuritypolicies", "networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  # Read secrets (for SA token analysis)
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubeagent-security
+  labels:
+    app: kubeagent
+    component: security
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubeagent-security
+subjects:
+  - kind: ServiceAccount
+    name: kubeagent-security
+    namespace: kubeagent-system

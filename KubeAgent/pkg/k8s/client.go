@@ -174,6 +174,11 @@ func (c *Client) GetPodEvents(podName, namespace string) (string, error) {
 		}
 	}
 
+	// Return meaningful message instead of empty array
+	if len(eventMessages) == 0 {
+		return "No warning events found for this pod", nil
+	}
+
 	data, err := json.Marshal(eventMessages)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal events: %w", err)

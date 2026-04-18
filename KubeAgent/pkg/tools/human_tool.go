@@ -5,13 +5,24 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 // HumanTool asks a human for confirmation before performing dangerous operations.
-type HumanTool struct{}
+type HumanTool struct {
+	timeout time.Duration
+}
 
 func NewHumanTool() *HumanTool {
-	return &HumanTool{}
+	return &HumanTool{
+		timeout: 5 * time.Minute, // Default 5 minute timeout
+	}
+}
+
+// WithTimeout sets the timeout for HumanTool
+func (h *HumanTool) WithTimeout(timeout time.Duration) *HumanTool {
+	h.timeout = timeout
+	return h
 }
 
 func (h *HumanTool) Name() string {
@@ -32,17 +43,49 @@ func (h *HumanTool) Execute(params map[string]any) (string, error) {
 		return "", fmt.Errorf("prompt is required")
 	}
 
-	fmt.Printf("\n[Human Approval Required] %s\n请输入 yes/y 确认，其他内容取消: ", prompt)
+	// Check for auto-approve mode (useful for testing)
+	if os.Getenv("AUTO_APPROVE") == "true" {
+		fmt.Printf("\n[HumanTool] Auto-approved (AUTO_APPROVE=true): %s\n", prompt)
+		return "auto-approved", nil
+	}
 
-	reader := bufio.NewReader(os.Stdin)
-	input, err := reader.ReadString('\n')
-	if err != nil {
+	// Check for auto-reject mode (non-interactive)
+	if os.Getenv("AUTO_REJECT") == "true" || os.Getenv("CI") == "true" {
+		fmt.Printf("\n[HumanTool] Auto-rejected (AUTO_REJECT=true or CI=true): %s\n", prompt)
+		return "auto-rejected", nil
+	}
+
+	fmt.Printf("\n[Human Approval Required] %s\n", prompt)
+	fmt.Printf("请在 %d 分钟内输入 yes/y 确认，其他内容取消: ", int(h.timeout/time.Minute))
+
+	// Set up timeout
+	resultChan := make(chan string, 1)
+	errChan := make(chan error, 1)
+	
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			errChan <- err
+			return
+		}
+		input = strings.TrimSpace(strings.ToLower(input))
+		if input == "yes" || input == "y" {
+			resultChan <- "approved"
+		} else {
+			resultChan <- "rejected"
+		}
+	}()
+
+	select {
+	case result := <-resultChan:
+		if result == "approved" {
+			return "approved", nil
+		}
+		return "rejected", nil
+	case err := <-errChan:
 		return "", fmt.Errorf("failed to read user input: %w", err)
+	case <-time.After(h.timeout):
+		return "", fmt.Errorf("timeout waiting for human approval (waited %v)", h.timeout)
 	}
-
-	input = strings.TrimSpace(strings.ToLower(input))
-	if input == "yes" || input == "y" {
-		return "approved", nil
-	}
-	return "rejected", nil
 }
