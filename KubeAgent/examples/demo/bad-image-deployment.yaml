@@ -1,0 +1,33 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+# A Deployment whose pod references a non-existent image tag.
+# The pod will be scheduled but stay in ImagePullBackOff / ErrImagePull
+# forever. This is the "broken" state the harness demo walks through.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bad-image
+  namespace: demo
+  labels:
+    app: bad-image
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bad-image
+  template:
+    metadata:
+      labels:
+        app: bad-image
+    spec:
+      containers:
+        - name: app
+          # Intentionally nonsense tag. Kubernetes will surface:
+          #   Failed to pull image ... not found
+          image: nginx:this-tag-does-not-exist-v999
+          ports:
+            - containerPort: 80
