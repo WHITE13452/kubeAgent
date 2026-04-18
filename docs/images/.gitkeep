@@ -1,0 +1,10 @@
+# 占位文件，确保演示截图目录被 Git 追踪。
+# 实际截图按 DEMO.md 中的命名放进来即可：
+#   00-help.png
+#   01-apply.png
+#   02-bad-pod.png
+#   03-fix-run.png
+#   04-audit.png
+#   05a-guide-block.png
+#   05b-audit-block.png
+#   06-no-verify.png
