@@ -6,11 +6,22 @@ import (
 	"time"
 
 	"kubeagent/pkg/agent"
+	"kubeagent/pkg/agent/harness"
 )
 
-// DiagnosticianAgent specializes in diagnosing pod failures and issues
+// DiagnosticianAgent specializes in diagnosing pod failures and issues.
+//
+// Diagnostician uses the harness Skills registry to source its system
+// prompt rather than hard-coding it. This lets operators iterate on
+// diagnostic prompts without rebuilding (via Skills.WithOverrideDir)
+// and lets the prompt evolve under git version control as a real file
+// rather than as a string literal.
 type DiagnosticianAgent struct {
 	*agent.BaseAgent
+
+	// skills sources the LLM-facing prompt. nil means "fall back to
+	// the legacy inline prompt", preserving backward compatibility.
+	skills *harness.Skills
 }
 
 // NewDiagnosticianAgent creates a new diagnostician agent
@@ -26,6 +37,13 @@ func NewDiagnosticianAgent(llmClient agent.LLMClient, logger agent.Logger) *Diag
 	return &DiagnosticianAgent{
 		BaseAgent: agent.NewBaseAgent(config, llmClient, logger),
 	}
+}
+
+// WithSkills installs a Skills registry. Pass nil to fall back to the
+// inline prompt. Returned receiver enables fluent wiring.
+func (d *DiagnosticianAgent) WithSkills(s *harness.Skills) *DiagnosticianAgent {
+	d.skills = s
+	return d
 }
 
 // CanHandle checks if the diagnostician can handle a task type
@@ -87,18 +105,10 @@ func (d *DiagnosticianAgent) Analyze(ctx *agent.AgentContext, input map[string]a
 
 // diagnose runs the agentic tool-use loop to collect data and produce a diagnosis
 func (d *DiagnosticianAgent) diagnose(ctx *agent.AgentContext, podName, namespace, description string) (map[string]any, error) {
-	systemPrompt := `You are a Kubernetes diagnostics expert. You have tools to inspect pods, logs, events, and cluster state.
-
-Use the available tools to collect information about the issue, then provide a diagnosis.
-
-Return your final diagnosis in JSON format:
-{
-  "root_cause": "Detailed explanation of the root cause",
-  "error_type": "Error classification (OOMKilled, CrashLoopBackOff, ImagePullBackOff, etc.)",
-  "key_errors": ["Error 1", "Error 2"],
-  "recommendations": ["Recommendation 1", "Recommendation 2"],
-  "confidence": 0.95
-}`
+	// Source the system prompt from the Skills registry when available;
+	// otherwise fall back to the legacy inline prompt so existing
+	// callers that don't wire skills still work.
+	systemPrompt := d.diagnosePrompt()
 
 	userPrompt := fmt.Sprintf(`Diagnose the following Kubernetes pod issue:
 
@@ -125,4 +135,34 @@ Use the available tools to collect logs, events, and other relevant information,
 	}
 
 	return diagnosis, nil
+}
+
+// fallbackDiagnosePrompt is kept as a const so the agent still has a
+// usable prompt when no Skills registry is wired in (e.g. unit tests
+// that construct the agent directly). Treat it as last-resort: the
+// pkg/agent/skills/diagnose.md file is the canonical version.
+const fallbackDiagnosePrompt = `You are a Kubernetes diagnostics expert. You have tools to inspect pods, logs, events, and cluster state.
+
+Use the available tools to collect information about the issue, then provide a diagnosis.
+
+Return your final diagnosis in JSON format:
+{
+  "root_cause": "Detailed explanation of the root cause",
+  "error_type": "Error classification (OOMKilled, CrashLoopBackOff, ImagePullBackOff, etc.)",
+  "key_errors": ["Error 1", "Error 2"],
+  "recommendations": ["Recommendation 1", "Recommendation 2"],
+  "confidence": 0.95
+}`
+
+// diagnosePrompt returns the skill body if Skills is configured and has
+// the entry; otherwise the inline fallback. Centralised so future
+// callers (e.g. CLI inspectors) can ask "what prompt would diagnostician
+// use right now?" without duplicating the lookup logic.
+func (d *DiagnosticianAgent) diagnosePrompt() string {
+	if d.skills != nil {
+		if body, ok := d.skills.Get("diagnose"); ok && body != "" {
+			return body
+		}
+	}
+	return fallbackDiagnosePrompt
 }

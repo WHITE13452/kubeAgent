@@ -237,6 +237,126 @@ func (c *Client) DeleteResource(resource, name, namespace string) (string, error
 	return fmt.Sprintf("Deleted %s/%s in namespace %s", resource, name, namespace), nil
 }
 
+// ResourceState is a structured snapshot of a single resource, returned
+// by GetResourceState. It is the input the harness Verifier consumes to
+// decide whether an action's intended state has been reached.
+type ResourceState struct {
+	Kind      string
+	Name      string
+	Namespace string
+	Exists    bool
+	// Phase mirrors pod.status.phase for Pods, or a derived condition for
+	// other kinds (e.g. "Available" for Deployments). Empty when not
+	// applicable.
+	Phase string
+	// Reason carries a short machine-readable reason when the resource is
+	// in a non-ready state (e.g. "CrashLoopBackOff").
+	Reason string
+	// Ready is a coarse boolean rollup: true when the resource is in its
+	// healthy steady state.
+	Ready bool
+	// Raw exposes the underlying object for callers that need richer info.
+	Raw *unstructured.Unstructured
+}
+
+// GetResourceState fetches a single resource and returns a structured
+// state snapshot. When the resource does not exist, it returns
+// (state, nil) with Exists=false rather than an error, so callers
+// verifying a delete operation can treat "not found" as success.
+func (c *Client) GetResourceState(resource, name, namespace string) (*ResourceState, error) {
+	if resource == "" || name == "" {
+		return nil, fmt.Errorf("resource and name are required")
+	}
+
+	mapping, err := c.mappingFor(resource)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve resource '%s': %w", resource, err)
+	}
+
+	var ri dynamic.ResourceInterface
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+		ri = c.dynamicClient.Resource(mapping.Resource).Namespace(namespace)
+	} else {
+		ri = c.dynamicClient.Resource(mapping.Resource)
+	}
+
+	obj, err := ri.Get(context.TODO(), name, metav1.GetOptions{})
+	if err != nil {
+		// Map "not found" to a structured non-existence rather than error,
+		// so verification of a delete can succeed by reading absence.
+		if isNotFoundError(err) {
+			return &ResourceState{
+				Kind:      mapping.GroupVersionKind.Kind,
+				Name:      name,
+				Namespace: namespace,
+				Exists:    false,
+			}, nil
+		}
+		return nil, fmt.Errorf("failed to get %s/%s: %w", resource, name, err)
+	}
+
+	state := &ResourceState{
+		Kind:      obj.GetKind(),
+		Name:      obj.GetName(),
+		Namespace: obj.GetNamespace(),
+		Exists:    true,
+		Raw:       obj,
+	}
+	deriveReadiness(state, obj)
+	return state, nil
+}
+
+// isNotFoundError loosely detects 404-style errors without pulling in the
+// full apierrors package at every call site.
+func isNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return bytes.Contains([]byte(msg), []byte("not found")) ||
+		bytes.Contains([]byte(msg), []byte("NotFound"))
+}
+
+// deriveReadiness fills Phase/Reason/Ready on the given state based on
+// the kind of object. Currently knows about Pod and Deployment; other
+// kinds are reported as Ready=true if they exist (the verifier will
+// fall back to Inconclusive when it can't say more).
+func deriveReadiness(state *ResourceState, obj *unstructured.Unstructured) {
+	switch state.Kind {
+	case "Pod":
+		phase, _, _ := unstructured.NestedString(obj.Object, "status", "phase")
+		state.Phase = phase
+		state.Ready = phase == "Running"
+		// Surface waiting/terminated reason for non-ready pods.
+		statuses, _, _ := unstructured.NestedSlice(obj.Object, "status", "containerStatuses")
+		for _, s := range statuses {
+			cs, ok := s.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if waiting, ok, _ := unstructured.NestedMap(cs, "state", "waiting"); ok {
+				if reason, _, _ := unstructured.NestedString(waiting, "reason"); reason != "" {
+					state.Reason = reason
+					state.Ready = false
+					return
+				}
+			}
+		}
+	case "Deployment":
+		// Ready when status.readyReplicas == spec.replicas.
+		desired, _, _ := unstructured.NestedInt64(obj.Object, "spec", "replicas")
+		ready, _, _ := unstructured.NestedInt64(obj.Object, "status", "readyReplicas")
+		state.Phase = fmt.Sprintf("%d/%d", ready, desired)
+		state.Ready = desired > 0 && ready == desired
+		if !state.Ready {
+			state.Reason = "ReplicasNotReady"
+		}
+	default:
+		// Unknown kinds: existence implies a best-effort "ready".
+		state.Ready = true
+	}
+}
+
 // mappingFor resolves a resource or kind name to a RESTMapping.
 // Handles both resource names ("pods") and kind names ("Pod").
 func (c *Client) mappingFor(resourceOrKind string) (*meta.RESTMapping, error) {
