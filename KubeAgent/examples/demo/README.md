@@ -24,6 +24,9 @@ the image tag is still wrong, the Verifier should FAIL — proving that
 an "open loop" agent would declare victory here while the closed-loop
 harness catches it.
 
+> 📖 更完整的、带截图位的演示文档见 [`docs/DEMO.md`](../../../docs/DEMO.md)，
+> 推荐按那个跑。本目录只保留最精简的复现指令。
+
 ## Run the demo
 
 Prerequisites: a kubeconfig pointing at a cluster you can write to

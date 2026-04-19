@@ -11,15 +11,17 @@
 ## 目录
 
 1. [演示目标](#演示目标)
-2. [环境准备](#环境准备)
-3. [Step 1 · 植入故障场景](#step-1--植入故障场景)
-4. [Step 2 · 观察坏 Pod 的当前状态](#step-2--观察坏-pod-的当前状态)
-5. [Step 3 · 运行 kubeagent fix（闭环修复主流程）](#step-3--运行-kubeagent-fix闭环修复主流程)
-6. [Step 4 · 查看 Audit 结构化日志](#step-4--查看-audit-结构化日志)
-7. [Step 5 · 反向验证 · Guide 拦截受保护命名空间](#step-5--反向验证--guide-拦截受保护命名空间)
-8. [Step 6 · 对照实验 · `--no-verify` 退化为 open-loop](#step-6--对照实验---no-verify-退化为-open-loop)
-9. [Step 7 · 清理演示环境](#step-7--清理演示环境)
-10. [附录 · Harness 事件词汇表](#附录--harness-事件词汇表)
+2. [演示方法论：两阶段跑法](#演示方法论两阶段跑法)
+3. [环境准备](#环境准备)
+4. [Step 1 · 植入故障场景](#step-1--植入故障场景)
+5. [Step 2 · 观察坏 Pod 的当前状态](#step-2--观察坏-pod-的当前状态)
+6. [Step 3A · Baseline 跑通（--no-verify）](#step-3a--baseline-跑通--no-verify)
+7. [Step 3B · 完整闭环（Sensor 捕获假阳性）](#step-3b--完整闭环sensor-捕获假阳性)
+8. [Step 4 · 查看 Audit 结构化日志](#step-4--查看-audit-结构化日志)
+9. [Step 5 · 反向验证 · Guide 拦截受保护命名空间](#step-5--反向验证--guide-拦截受保护命名空间)
+10. [Step 6 · 清理演示环境](#step-6--清理演示环境)
+11. [Troubleshooting · 之前遇到过的坑](#troubleshooting--之前遇到过的坑)
+12. [附录 · Harness 事件词汇表](#附录--harness-事件词汇表)
 
 ---
 
@@ -33,6 +35,21 @@
   `PreflightChain` 直接拦截。
 - **Audit 的价值**：Preflight / Action / Verification / Decision 四类事件实时
   落到终端和 JSONL，方便事后回放。
+
+---
+
+## 演示方法论：两阶段跑法
+
+**现场演示建议按顺序跑两次**，拿到的效果互补：
+
+| 阶段 | 命令 | 目的 | 大概率的结果 |
+|------|------|------|------|
+| **3A** | `kubeagent fix --no-verify ...` | **保底 demo**：关闭 Sensor，只验证 Guide + Action 链路能跑通 | 任务 Completed，不关心 Pod 真的起没起 |
+| **3B** | `kubeagent fix ...`（默认 full loop） | **亮点 demo**：打开 Sensor，展示 open-loop 假阳性被捕获 | 任务被判为 Failed，`verification: failed` |
+
+这样安排的好处：
+1. **3A 一定能出效果**：即便 Verifier 因网络抖动或 LLM 误判导致假阴性，至少 Guide + Action + Audit 三条链路是可演示的。
+2. **3B 展示的是"为什么需要闭环"**：没有 Sensor 的 Agent 会高高兴兴告诉你"修好了"。有了 Sensor，真相立刻揭穿。
 
 ---
 
@@ -55,17 +72,7 @@ make build       # 或者 go build -o bin/kubeagent .
 export PATH=$PWD/bin:$PATH
 ```
 
-预期：`kubeagent --help` 能看到 `fix` 子命令：
-
-```
-$ kubeagent --help
-...
-Available Commands:
-  analyze     Diagnose Kubernetes issues using the multi-agent framework
-  chat        ...
-  fix         Diagnose and remediate a Kubernetes resource with closed-loop verification
-  kubecheck   ...
-```
+预期：`kubeagent --help` 能看到 `fix` 子命令。
 
 > 📸 **截图位 · 图 0**：`kubeagent --help` 输出，能看到新增的 `fix` 命令。
 >
@@ -75,7 +82,7 @@ Available Commands:
 
 ## Step 1 · 植入故障场景
 
-我们使用仓库自带的演示清单：`KubeAgent/examples/demo/bad-image-deployment.yaml`。
+使用仓库自带的演示清单：`KubeAgent/examples/demo/bad-image-deployment.yaml`。
 它会创建 `demo` 命名空间 + 一个引用不存在镜像 tag 的 Deployment。
 
 ```bash
@@ -111,13 +118,75 @@ kubectl -n demo describe pod -l app=bad-image | tail -20
 
 ---
 
-## Step 3 · 运行 kubeagent fix（闭环修复主流程）
+## Step 3A · Baseline 跑通（`--no-verify`）
 
-把坏 Pod 的名字拿出来，然后调用 `kubeagent fix`：
+**先跑一遍不带 Verifier 的版本**，确保 Guide + Action + Audit 链路在你的环境里
+能通。这一次我们不关心 Pod 有没有真的起来。
 
 ```bash
 BAD_POD=$(kubectl -n demo get pod -l app=bad-image -o name | head -1 | cut -d/ -f2)
 echo "Target pod: $BAD_POD"
+
+kubeagent fix \
+  --pod "$BAD_POD" \
+  --namespace demo \
+  --description "这个 pod 一直 ImagePullBackOff，请诊断并尝试修复" \
+  --audit-file /tmp/kubeagent-audit-baseline.jsonl \
+  --protected kube-system,kube-public,kube-node-lease \
+  --no-verify
+```
+
+### 预期终端输出
+
+```
+=== kubeagent fix ===
+Target:      demo/bad-image-xxxxxxxxxx
+Verifier:    DISABLED (--no-verify)
+Audit file:  /tmp/kubeagent-audit-baseline.jsonl
+Protected:   kube-system, kube-public, kube-node-lease
+```
+
+随后 ConsoleReporter 会打印：
+
+```
+[GUIDE ] DeleteTool        action=delete        outcome=allow
+[ACTION] remediator        action=remediation_applied   outcome=success
+```
+
+任务结束时 `task.Status = Completed`（没有 Verifier 来判 Failed）。
+
+这一段证明：**诊断 → 工具选择 → 写操作 → 审计** 整条链路都在工作。
+
+> 📸 **截图位 · 图 3A**：`--no-verify` 下的完整终端输出，能看到
+> `[GUIDE ]` + `[ACTION]` 两种标签，且任务被判为成功完成。
+>
+> ![fix-baseline](./images/03a-fix-baseline.png)
+
+### Baseline 检查点
+
+完成后，你可以先停下来确认审计文件：
+
+```bash
+cat /tmp/kubeagent-audit-baseline.jsonl | jq .
+```
+
+你会看到两条记录（preflight + action），但**没有 verification** 条目——这正是
+open-loop Agent 的典型行为。
+
+---
+
+## Step 3B · 完整闭环（Sensor 捕获假阳性）
+
+重置环境然后跑完整版：
+
+```bash
+# 重新植入故障（上一轮删 Pod 后 Deployment 会重建，但我们想要一个干净的起点）
+kubectl delete -f KubeAgent/examples/demo/bad-image-deployment.yaml 2>/dev/null
+sleep 2
+kubectl apply -f KubeAgent/examples/demo/bad-image-deployment.yaml
+sleep 5   # 等 Pod 起来进入 ImagePullBackOff
+
+BAD_POD=$(kubectl -n demo get pod -l app=bad-image -o name | head -1 | cut -d/ -f2)
 
 kubeagent fix \
   --pod "$BAD_POD" \
@@ -139,12 +208,12 @@ Audit file:  /tmp/kubeagent-audit.jsonl
 Protected:   kube-system, kube-public, kube-node-lease
 ```
 
-随后 ConsoleReporter 会实时打印 Harness 四类事件（颜色以实际终端为准）：
+随后 ConsoleReporter 依次打印：
 
 ```
 [GUIDE ] DeleteTool        action=delete     target=Pod/bad-image-xxxx@demo    outcome=allow
-[ACTION] remediator        action=remediation_applied                          outcome=success
-[SENSOR] remediator        action=post_action_verify                           outcome=failed
+[ACTION] remediator        action=remediation_applied                           outcome=success
+[SENSOR] remediator        action=post_action_verify                            outcome=failed
           reason: pod never reached Running phase (ImagePullBackOff)
 ```
 
@@ -157,14 +226,14 @@ Errors encountered:
  - verification failed: post-action verification failed: ...
 ```
 
-**这正是闭环的关键**：LLM 的 tool loop 已经"顺利"把 Pod 删了，但 Sensor
-发现重建的 Pod 仍然起不来，把任务判为 **Failed**——避免了 open-loop 下的
-假阳性"已修复"。
+**这正是闭环的关键**：LLM 的 tool loop 已经"顺利"把 Pod 删了，但 Sensor 发现
+重建的 Pod 依然起不来（镜像 tag 还是错的），把任务判为 **Failed**——避免了
+open-loop 下的假阳性"已修复"。
 
-> 📸 **截图位 · 图 3**：终端完整输出，能看到 GUIDE/ACTION/SENSOR 四种标签的
-> 颜色化日志，以及最后的 Fix Result 汇总。
+> 📸 **截图位 · 图 3B**：完整闭环输出，能看到 `[GUIDE ]` + `[ACTION]` +
+> **`[SENSOR]` 红色 failed** 三个标签，以及最后的 Fix Result。
 >
-> ![fix-run](./images/03-fix-run.png)
+> ![fix-full-loop](./images/03b-fix-full-loop.png)
 
 ---
 
@@ -205,8 +274,11 @@ cat /tmp/kubeagent-audit.jsonl | jq .
 }
 ```
 
-> 📸 **截图位 · 图 4**：`jq` 格式化后的审计输出，能看到至少一条
-> `preflight` + 一条 `action` + 一条 `verification` 记录。
+**和 Step 3A 对比**：baseline 审计里只有 `preflight` + `action`；闭环审计里
+多了 `verification`——这就是 Harness 的"封口"动作。
+
+> 📸 **截图位 · 图 4**：`jq` 格式化后的审计输出，能看到 preflight + action +
+> verification 三类记录并排。
 >
 > ![audit-jsonl](./images/04-audit.png)
 
@@ -214,7 +286,7 @@ cat /tmp/kubeagent-audit.jsonl | jq .
 
 ## Step 5 · 反向验证 · Guide 拦截受保护命名空间
 
-这一步证明 Guide 不是摆设：我们假装想删除 `kube-system` 的 pod。
+证明 Guide 不是摆设：假装想删除 `kube-system` 的 Pod。
 
 ```bash
 kubeagent fix \
@@ -227,11 +299,10 @@ kubeagent fix \
 预期：
 
 - 终端 ConsoleReporter 出现 `[GUIDE!]` 标签（红色）+ `outcome=block`
-- JSONL 里追加一条 `kind=preflight, outcome=block, reason=namespace "kube-system" is protected ...`
+- JSONL 追加一条 `kind=preflight, outcome=block, reason=namespace "kube-system" is protected ...`
 - 实际 `kube-system` 里没有任何 Pod 被删除
 
 ```bash
-# 验证 kube-system 状态未变
 kubectl -n kube-system get pods
 ```
 
@@ -245,41 +316,63 @@ kubectl -n kube-system get pods
 
 ---
 
-## Step 6 · 对照实验 · `--no-verify` 退化为 open-loop
-
-要直观感受 Verifier 的价值，可以故意关掉它：
-
-```bash
-# 先重新植入坏 Deployment（上一轮可能已被删掉）
-kubectl apply -f KubeAgent/examples/demo/bad-image-deployment.yaml
-BAD_POD=$(kubectl -n demo get pod -l app=bad-image -o name | head -1 | cut -d/ -f2)
-
-kubeagent fix \
-  --pod "$BAD_POD" \
-  --namespace demo \
-  --description "这个 pod 一直 ImagePullBackOff，请诊断并尝试修复" \
-  --no-verify
-```
-
-预期：
-
-- 启动横幅里 `Verifier: DISABLED (--no-verify)`
-- 任务状态会是 "Completed"（假阳性），尽管集群里的 Pod 依然起不来
-- 对比 Step 3，这就是 Harness 之前的老行为——修了个寂寞还告诉你修好了
-
-> 📸 **截图位 · 图 6**：`--no-verify` 模式下终端把任务标为 Completed，但
-> `kubectl -n demo get pods` 仍然显示 ImagePullBackOff。
->
-> ![no-verify-compare](./images/06-no-verify.png)
-
----
-
-## Step 7 · 清理演示环境
+## Step 6 · 清理演示环境
 
 ```bash
 kubectl delete -f KubeAgent/examples/demo/bad-image-deployment.yaml
-rm -f /tmp/kubeagent-audit.jsonl
+rm -f /tmp/kubeagent-audit.jsonl /tmp/kubeagent-audit-baseline.jsonl
 ```
+
+---
+
+## Troubleshooting · 之前遇到过的坑
+
+### Q1 · LLM 反复选 `kubectl patch`，任务跑到 `max iterations reached`
+
+**症状**：终端刷屏 `Executing tool KubeTool {"command": "kubectl patch ..."}`，但
+每次都被拒绝 (`kubectl 'patch' is a write operation and is not supported by KubeTool`)，
+最后报 `tool loop: max iterations (10) reached`。
+
+**原因**：LLM 对 `kubectl` 的肌肉记忆很强，看到 KubeTool 就想 patch；KubeTool
+是只读白名单工具，patch 不在列表里，拒绝后 LLM 不知道换工具。
+
+**本仓库的修复（已合入 main）**：
+
+1. `pkg/tools/kube_tool.go`：KubeTool 的 `Description` 明确列出允许/禁止的子命令，
+   禁止清单里包含 `patch/apply/edit/delete/create/scale/rollout/label/annotate/replace/set`。
+2. KubeTool 被拒绝时，错误消息直接告诉 LLM 改用哪个工具，例如：
+   > `kubectl 'patch' is a write operation and is not supported by KubeTool — use DeleteTool to let the controller recreate the resource, or CreateTool to submit a replacement YAML`
+3. `pkg/agent/skills/remediate.md`：新增工具选择决策树 + demo 场景 worked example，
+   让 LLM 开跑就知道 "删 Pod → DeleteTool, patch → CreateTool 重提 YAML"。
+4. `cmd/fix.go`：Remediator **不再注册 KubeTool**（保留 `HumanTool` + `CreateTool`
+   + `DeleteTool`）。物理禁止该路径。
+
+**如果你还想微调提示词**（比如换一种更狠的措辞），不需要重编：
+
+```bash
+mkdir -p /tmp/skills-override
+cp KubeAgent/pkg/agent/skills/remediate.md /tmp/skills-override/
+# 编辑 /tmp/skills-override/remediate.md
+export SKILLS_DIR=/tmp/skills-override
+kubeagent fix ...
+```
+
+`Skills.WithOverrideDir` 会优先使用这里的 Markdown，无需重启或重编。
+
+### Q2 · Sensor 总是 `inconclusive`
+
+**原因**：Verifier 读取不到目标资源（`task.Input` 没带 `pod_name` / `namespace`）。
+
+**解法**：
+- 显式传 `--pod xxx --namespace demo`，比纯自然语言 `--description` 可靠得多；
+- 或者在 `--description` 里点名资源，例如 "delete pod bad-image-abcde in namespace demo"。
+
+### Q3 · LLM 调用失败 / 超时
+
+检查：
+- `ANTHROPIC_API_KEY`（或项目 MiniMax 配置）是否已导出；
+- 出站网络到 LLM 端点是否可达；
+- 如果用 MiniMax，确认走的是兼容 Anthropic API 的网关地址。
 
 ---
 
@@ -301,28 +394,3 @@ ConsoleReporter 对应的终端标签：
 | `[ACTION]` | 黄色 | 写工具实际执行 |
 | `[SENSOR]` | 蓝色 | Verifier 结果 |
 | `[DECIDE]` | 紫色 | Agent 层决策 |
-
----
-
-## 常见问题
-
-**Q: 运行 `kubeagent fix` 时 LLM 调用失败怎么办？**
-A: 先检查环境变量（`ANTHROPIC_API_KEY` 或项目配置的 key），以及网络出站是否可达
-LLM provider。
-
-**Q: Sensor 总是 inconclusive？**
-A: 多半是 `task.Input` 没带 `pod_name`/`namespace`。`fix --pod --namespace` 是
-最可靠的方式；纯 `--description` 模式依赖 LLM 自行在工具调用里记录目标，
-不一定能提取到。
-
-**Q: 如何自定义 Guide？**
-A: 实现 `harness.PreflightCheck` 接口（`Name()` + `Check(ctx, req)`），然后
-在 `cmd/fix.go` 里 `.Add()` 到 `PreflightChain` 上即可。
-
-**Q: 如何自定义 LLM 提示词？**
-A: 编辑 `KubeAgent/pkg/agent/skills/*.md` 并重新编译；或者运行时：
-```bash
-export SKILLS_DIR=/path/to/your/overrides
-kubeagent fix ...
-```
-运行时 override 会优先于嵌入的版本。
