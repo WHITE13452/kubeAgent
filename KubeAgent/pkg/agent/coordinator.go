@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -371,7 +372,14 @@ Respond with only the JSON array.`, request.Input, intent)
 		} `json:"condition"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &tasksData); err != nil {
+	// Strip markdown code fences that MiniMax might wrap around JSON
+	cleanResponse := strings.TrimSpace(response)
+	cleanResponse = strings.TrimPrefix(cleanResponse, "```json")
+	cleanResponse = strings.TrimPrefix(cleanResponse, "```")
+	cleanResponse = strings.TrimSuffix(cleanResponse, "```")
+	cleanResponse = strings.TrimSpace(cleanResponse)
+
+	if err := json.Unmarshal([]byte(cleanResponse), &tasksData); err != nil {
 		// If JSON parsing fails, create a simple single task
 		c.logger.Warn("Failed to parse LLM response as JSON, creating simple task", map[string]interface{}{
 			"error": err.Error(),

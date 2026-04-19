@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -17,6 +18,19 @@ type AnthropicLLMClient struct {
 	config *LLMConfig
 }
 
+// authTransport adds Authorization header to all requests
+// This is a workaround for the SDK bug where WithAuthToken stores the token
+// but doesn't actually add it to HTTP request headers.
+type authTransport struct {
+	base         http.RoundTripper
+	authorization string
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	fmt.Fprintf(os.Stderr, "[DEBUG authTransport] URL: %s, Auth: %s\n", req.URL.String(), t.authorization[:20]+"...")
+	req.Header.Set("Authorization", t.authorization)
+	return t.base.RoundTrip(req)
+}
 // NewAnthropicLLMClient creates a new Anthropic LLM client
 // If config is nil, auto-detects provider from environment variables:
 //   - ANTHROPIC_API_KEY → Anthropic (Claude)
@@ -29,12 +43,21 @@ func NewAnthropicLLMClient(config *LLMConfig) (*AnthropicLLMClient, error) {
 		}
 	}
 
-	opts := []option.RequestOption{
-		option.WithAPIKey(config.APIKey),
-	}
+	opts := []option.RequestOption{}
 	if config.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(config.BaseURL))
 	}
+
+	// Use a custom HTTP client that adds Authorization header
+	// The SDK's auth options (WithAPIKey/WithAuthToken) store the token
+	// but don't actually add it to HTTP request headers - this is a workaround
+	httpClient := &http.Client{
+		Transport: &authTransport{
+			base:         http.DefaultTransport,
+			authorization: "Bearer " + config.APIKey,
+		},
+	}
+	opts = append(opts, option.WithHTTPClient(httpClient))
 
 	client := anthropic.NewClient(opts...)
 
