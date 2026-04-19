@@ -286,7 +286,82 @@ cat /tmp/kubeagent-audit.jsonl | jq .
 
 ## Step 5 · 反向验证 · Guide 拦截受保护命名空间
 
-证明 Guide 不是摆设：假装想删除 `kube-system` 的 Pod。
+证明 Guide 不是摆设：假装想删除 `kube-system` 的 Pod，看 Preflight 直接拒绝。
+
+> ⚠️ **为什么不用 `kubeagent fix`？**
+> `fix` 会先跑完整的诊断链（LLM 工具循环），诊断阶段可能耗时数十秒甚至更久，
+> 才能走到 Remediator 触发 DeleteTool——中间任何一步超时或被 SIGKILL，Guide
+> 的效果就看不见了。真正想演示 "Guide 拦截" 应该用下面的 `preflight` 子命令：
+> 不走 LLM、不调 Coordinator，**秒级出结果**。
+
+### 推荐路径 · `kubeagent preflight`（秒级确定性）
+
+```bash
+# Block path：模拟删除 kube-system 下的 Pod
+kubeagent preflight \
+  --verb delete \
+  --kind pod \
+  --name coredns-xxxx \
+  --namespace kube-system \
+  --protected kube-system,kube-public,kube-node-lease \
+  --audit-file /tmp/kubeagent-audit.jsonl
+```
+
+预期输出（截取）：
+
+```
+=== kubeagent preflight ===
+Verb:        delete
+Target:      pod/coredns-xxxx in namespace "kube-system"
+Protected:   [kube-system kube-public kube-node-lease]
+
+[GUIDE!] preflight-cli        action=delete        outcome=block
+          reason: namespace "kube-system" is protected against delete by policy
+
+========== Preflight Result ==========
+Decision: block
+Reason:   namespace "kube-system" is protected against delete by policy
+```
+
+退出码规范（方便脚本断言）：
+
+| Decision | Exit code |
+|----------|-----------|
+| `allow` | 0 |
+| `warn` | 3 |
+| `block` | 2 |
+
+对照 · Allow path：
+
+```bash
+kubeagent preflight \
+  --verb delete \
+  --kind pod \
+  --name nginx-1 \
+  --namespace default
+# Decision: allow, exit 0
+```
+
+> 📸 **截图位 · 图 5a**：`kubeagent preflight` 被 Guide 拦截的终端截图
+> （应能看到 `[GUIDE!]` 红色标签 + Decision: block）。
+>
+> ![guide-block](./images/05a-guide-block.png)
+
+> 📸 **截图位 · 图 5b**：`/tmp/kubeagent-audit.jsonl` 中追加的 `block` 记录。
+>
+> ![audit-block](./images/05b-audit-block.png)
+
+**没有 k8s 集群？** 加 `--no-cluster` 跳过 `ResourceExistsCheck`，只保留
+`ProtectedNamespaceCheck`——纯演示时特别有用：
+
+```bash
+kubeagent preflight --verb delete --kind pod --name foo -n kube-system --no-cluster
+```
+
+### 备选路径 · 通过 `kubeagent fix` 完整演示（慢，不稳定）
+
+如果**观众非要看 Agent 发起违规**，可以这样跑（需要预留更长时间，建议加大
+默认 context）：
 
 ```bash
 kubeagent fix \
@@ -296,23 +371,12 @@ kubeagent fix \
   --audit-file /tmp/kubeagent-audit.jsonl
 ```
 
-预期：
+典型现象：
 
-- 终端 ConsoleReporter 出现 `[GUIDE!]` 标签（红色）+ `outcome=block`
-- JSONL 追加一条 `kind=preflight, outcome=block, reason=namespace "kube-system" is protected ...`
-- 实际 `kube-system` 里没有任何 Pod 被删除
-
-```bash
-kubectl -n kube-system get pods
-```
-
-> 📸 **截图位 · 图 5a**：`kubeagent fix` 被 Guide 拦截的终端截图。
->
-> ![guide-block](./images/05a-guide-block.png)
-
-> 📸 **截图位 · 图 5b**：`/tmp/kubeagent-audit.jsonl` 中的 `block` 记录。
->
-> ![audit-block](./images/05b-audit-block.png)
+- Diagnostician 会先拉 Pod 事件/日志——取决于集群规模，这步可能很慢；
+- Remediator 到位后走 HumanTool → DeleteTool → **被 Preflight 拦截** → 返回错误；
+- 终端有 `[GUIDE!]` + JSONL 中有 `preflight/block` 记录；
+- 若中途被 SIGKILL / 超时，回退到上面的 `kubeagent preflight` 展示同样的拦截效果。
 
 ---
 

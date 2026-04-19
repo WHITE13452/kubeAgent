@@ -20,7 +20,7 @@ KubeAgent 是一个集成大模型能力的 Kubernetes 运维工具，通过多 
 - **人工审批 + 策略保护**: 危险操作需 HumanTool 确认，并受 ProtectedNamespaceCheck 等 Guide 策略约束
 - **可扩展工具系统**: 9 个内置工具，支持自定义 Tool 接口扩展
 - **Skills 可热替换**: LLM 系统提示以 Markdown 形式嵌入（`pkg/agent/skills/*.md`），支持运行时通过 `SKILLS_DIR` 覆盖
-- **四种交互模式**: 问题诊断 (analyze)、资源管理 (chat)、集群检查 (kubecheck)、闭环修复 (fix)
+- **四种交互模式 + Guide 自检**: 问题诊断 (analyze)、资源管理 (chat)、集群检查 (kubecheck)、闭环修复 (fix)、Preflight 快速自检 (preflight)
 
 ## 系统架构
 
@@ -195,6 +195,23 @@ kubeagent fix --pod foo --no-verify
 4. **Audit** 四类事件（preflight / action / verification / decision）实时写入控制台并按需追加到 JSONL 文件。
 
 > 完整演示见 [`docs/DEMO.md`](docs/DEMO.md)。
+
+### 5. Preflight 自检 (preflight) — 纯 Guide 演示
+
+不走 LLM、不调 Coordinator，秒级评估一次假设性操作会不会被 Guide 拦住：
+
+```bash
+# 受保护命名空间：block
+kubeagent preflight --verb delete --kind pod --name coredns-xxxx -n kube-system
+
+# 非受保护命名空间：allow
+kubeagent preflight --verb delete --kind pod --name nginx-1 -n default
+
+# 没有集群时只跑 ProtectedNamespaceCheck
+kubeagent preflight --verb delete --kind pod --name foo -n kube-system --no-cluster
+```
+
+退出码：`0=allow / 2=block / 3=warn`，方便 CI 脚本断言。
 
 ## 可用工具
 
