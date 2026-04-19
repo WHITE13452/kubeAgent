@@ -155,6 +155,16 @@ func runFix(cmd *cobra.Command, args []string) {
 		WithSkills(skillRegistry).
 		WithAuditor(auditor).
 		WithVerifier(verifier)
+	// Remediator tool set is deliberately NARROW:
+	//   - HumanTool     : approvals for dangerous writes
+	//   - CreateTool    : submit full YAML (also the "patch" path)
+	//   - DeleteTool    : delete a resource, letting controllers rebuild
+	//
+	// KubeTool is intentionally NOT registered here. Including it
+	// tempted the LLM to reach for `kubectl patch` — which KubeTool
+	// rejects (read-only whitelist) — causing the tool loop to spin
+	// until iteration cap. Read-only state lookup is Diagnostician's
+	// job; by this point its report is already in `task.Input`.
 	remediator.AddTool(pkgtools.NewHumanTool())
 	remediator.AddTool(pkgtools.NewCreateTool(k8sClient).
 		WithPreflight(preflight).
@@ -162,7 +172,6 @@ func runFix(cmd *cobra.Command, args []string) {
 	remediator.AddTool(pkgtools.NewDeleteTool(k8sClient).
 		WithPreflight(preflight).
 		WithAuditor(auditor))
-	remediator.AddTool(pkgtools.NewKubeTool())
 	if err := coordinator.RegisterAgent(remediator); err != nil {
 		fmt.Printf("Failed to register remediator: %v\n", err)
 		os.Exit(1)
